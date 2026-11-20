@@ -45,6 +45,7 @@ class NexController(private val ctx: Context) {
     var voice by mutableStateOf(store.voice)
     var speechRate by mutableFloatStateOf(store.speechRate)
     var autoSpeak by mutableStateOf(store.autoSpeak)
+    var wakeWordEnabled by mutableStateOf(store.wakeWordEnabled)
     var userName by mutableStateOf(store.userName)
 
     var selectedProfileId by mutableStateOf(store.selectedProfileId)
@@ -99,6 +100,8 @@ class NexController(private val ctx: Context) {
         voice = store.voice
         speechRate = store.speechRate
         autoSpeak = store.autoSpeak
+        wakeWordEnabled = store.wakeWordEnabled
+        if (wakeWordEnabled && Perms.has(ctx, android.Manifest.permission.RECORD_AUDIO)) NexWakeWordService.start(ctx)
         userName = store.userName.ifBlank { account.displayName }
 
         selectedProfileId = store.selectedProfileId
@@ -370,6 +373,17 @@ class NexController(private val ctx: Context) {
     fun updateAutoSpeak(enabled: Boolean) {
         autoSpeak = enabled
         store.autoSpeak = enabled
+    }
+
+    fun updateWakeWordEnabled(enabled: Boolean) {
+        if (enabled && !Perms.has(ctx, android.Manifest.permission.RECORD_AUDIO)) {
+            wakeWordEnabled = false
+            store.wakeWordEnabled = false
+            return
+        }
+        wakeWordEnabled = enabled
+        store.wakeWordEnabled = enabled
+        if (enabled) NexWakeWordService.start(ctx) else NexWakeWordService.stop(ctx)
     }
 
     fun updateUserName(name: String) {

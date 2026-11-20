@@ -609,9 +609,9 @@ class AgentEngine(private val ctx: Context, private val store: Store) {
                     appendLine("=== Email ===")
                     val mCfg = store.loadMailConfig()
                     if (mCfg.isConfigured) {
-                     val mailText = runCatching {
-    MailClient.readInbox(mCfg, 5).joinToString("\n") { "- ${it.from}: ${it.subject}" }
-}.getOrElse { "Mail error: ${it.message}" }
+                        val mailText = runCatching {
+                            MailClient.readInbox(mCfg, 5).joinToString("\n") { "- ${it.from}: ${it.subject}" }
+                        }.getOrElse { "Mail error: ${it.message}" }
                         appendLine(mailText.ifBlank { "Inbox is empty." })
                     } else {
                         appendLine("Email not configured.")

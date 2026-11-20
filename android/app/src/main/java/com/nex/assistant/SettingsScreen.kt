@@ -165,6 +165,13 @@ private fun VoiceSettingsTab(ctrl: NexController) {
         onCheckedChange = { ctrl.updateAutoSpeak(it) }
     )
 
+    SettingSwitchRow(
+        title = ctrl.t("wake_word_title"),
+        desc = ctrl.t("wake_word_desc"),
+        checked = ctrl.wakeWordEnabled,
+        onCheckedChange = { ctrl.updateWakeWordEnabled(it) }
+    )
+
     HorizontalDivider()
     OutlinedButton(
         onClick = { Perms.openDefaultAssistantSettings(ctx) },

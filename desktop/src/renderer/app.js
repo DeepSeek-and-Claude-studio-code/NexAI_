@@ -16,6 +16,7 @@
       refresh_models: 'Обновить модели из API',
       voice_label: 'Голос Некса', male: 'Мужской (Некс)', female: 'Женский (Некси)', neutral: 'Нейтральный',
       speech_speed: 'Скорость речи', auto_speak: 'Озвучивать ответы',
+      wake_word: 'Откликаться на «Некс»', wake_word_d: 'Постоянно ждёт слово «Некс» (или «Некси»), затем слушает просьбу',
       show_comp: 'Показывать Некса на экране ПК', show_comp_desc: 'Плавающий шар в углу экрана (Ctrl+Alt+N)',
       mem_auto: 'Запоминать из чатов', mem_empty: 'Память пуста.', add_mem: 'Добавить в память', add: 'Добавить', clear: 'Очистить',
       access_desc: 'Без разрешения агент не заходит в эту область.',
@@ -63,6 +64,7 @@
       refresh_models: 'Refresh models from APIs',
       voice_label: "Nex's voice", male: 'Male (Nex)', female: 'Female (Nexi)', neutral: 'Neutral',
       speech_speed: 'Speech speed', auto_speak: 'Speak replies aloud',
+      wake_word: 'Always listen for "Nex"', wake_word_d: 'Waits for "Nex" (or "Nexi") then listens to your request',
       show_comp: 'Show Nex on desktop screen', show_comp_desc: 'Floating sphere in screen corner (Ctrl+Alt+N)',
       mem_auto: 'Remember from chats', mem_empty: 'Memory is empty.', add_mem: 'Add to memory', add: 'Add', clear: 'Clear',
       access_desc: 'Without permission Nex will not enter that area.',
@@ -662,6 +664,7 @@
       root.appendChild(rng);
 
       switchRow(root, tr('auto_speak'), '', state.autoSpeak, (v) => window.nexApi.updateSettings({ autoSpeak: v }));
+      switchRow(root, tr('wake_word'), tr('wake_word_d'), state.wakeWordEnabled, (v) => window.nexApi.updateSettings({ wakeWordEnabled: v }));
       switchRow(root, tr('show_comp'), tr('show_comp_desc'), state.showCompanion, (v) => window.nexApi.updateSettings({ showCompanion: v }));
     } else if (activeSettingsTab === 'memory') {
       switchRow(root, tr('mem_auto'), '', state.memoryAutoSave, (v) => window.nexApi.updateSettings({ memoryAutoSave: v }));
@@ -1205,11 +1208,30 @@
   document.getElementById('btnPlus').onclick = (e) => { e.stopPropagation(); const m = document.getElementById('plusMenu'); renderPlusMenu(); m.hidden = !m.hidden; };
   document.addEventListener('click', () => { document.getElementById('plusMenu').hidden = true; });
   document.getElementById('btnSend').onclick = sendCurrent;
+  document.getElementById('btnMic').onclick = async () => {
+    const active = await window.NexVoice.toggleManualRecord();
+    document.getElementById('btnMic').classList.toggle('send-btn', active);
+  };
+
+  window.NexVoice.init({
+    onTranscript: (text) => {
+      document.getElementById('btnMic').classList.remove('send-btn');
+      const inp = document.getElementById('chatInput');
+      inp.value = text;
+      sendCurrent();
+    },
+    onStatus: (msg) => {
+      document.getElementById('statusText').textContent = msg;
+    },
+    getLang: () => state?.lang || 'ru',
+    isBusy: () => isBusy
+  });
   document.getElementById('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCurrent(); } });
 
   window.nexApi.onStateChanged((next) => {
     state = next;
     genMode = next.lastGenMode || null;
+    window.NexVoice.setWakeWordEnabled(Boolean(state.wakeWordEnabled));
     renderAll();
   });
 
@@ -1248,6 +1270,7 @@
     sphereData = boot.sphere;
     confirmation = boot.confirmation;
     renderAll();
+    if (state.wakeWordEnabled) window.NexVoice.setWakeWordEnabled(true);
     if (!state.onboarded) {
       onbStep = 0;
       openOnboarding();

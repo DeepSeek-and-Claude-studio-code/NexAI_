@@ -286,4 +286,72 @@ async function fetchModels(provider, apiKey) {
   return ids;
 }
 
-module.exports = { complete, fetchModels };
+async function transcribeAudio({ geminiKey, openaiKey, geminiModels, audioBase64, mimeType, lang, wakeCheck }) {
+  if (!audioBase64) return { ok: false, text: '', error: 'Empty audio' };
+  const cleanMime = String(mimeType || 'audio/webm').split(';')[0].trim() || 'audio/webm';
+
+  if (geminiKey) {
+    const prompt = wakeCheck
+      ? `Transcribe this short ${lang === 'en' ? 'English' : 'Russian'} audio verbatim. Return ONLY the spoken words, nothing else. If it is silence or noise, return empty string.`
+      : `Transcribe this ${lang === 'en' ? 'English' : 'Russian'} voice request verbatim. Return ONLY the spoken text without quotes or commentary.`;
+
+    const candidates = Array.from(new Set([
+      ...(Array.isArray(geminiModels) ? geminiModels.filter(m => /flash/i.test(m)) : []),
+      'gemini-3.1-flash-lite',
+      'gemini-2.5-flash',
+      'gemini-2.0-flash'
+    ])).slice(0, 4);
+
+    let lastErr = '';
+    for (const model of candidates) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+      const res = await fetchJson(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [
+              { inlineData: { mimeType: cleanMime, data: audioBase64 } },
+              { text: prompt }
+            ]
+          }],
+          generationConfig: { maxOutputTokens: wakeCheck ? 64 : 512, temperature: 0 }
+        })
+      });
+      if (res.ok) {
+        const data = JSON.parse(res.text);
+        const text = (data?.candidates?.[0]?.content?.parts || [])
+          .filter(p => typeof p.text === 'string' && !p.thought)
+          .map(p => p.text)
+          .join(' ')
+          .trim();
+        return { ok: true, text };
+      }
+      lastErr = `Gemini STT HTTP ${res.status}: ${res.text.slice(0, 180)}`;
+      if (res.status !== 404 && res.status !== 400) break;
+    }
+    if (!openaiKey) return { ok: false, text: '', error: lastErr || 'Gemini STT failed' };
+  }
+
+  if (openaiKey) {
+    const buf = Buffer.from(audioBase64, 'base64');
+    const form = new FormData();
+    form.append('model', 'whisper-1');
+    form.append('language', lang === 'en' ? 'en' : 'ru');
+    form.append('file', new Blob([buf], { type: cleanMime }), 'voice.webm');
+    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${openaiKey}` },
+      body: form
+    });
+    const text = await res.text();
+    if (!res.ok) return { ok: false, text: '', error: `OpenAI STT HTTP ${res.status}: ${text.slice(0, 180)}` };
+    const parsed = JSON.parse(text);
+    return { ok: true, text: String(parsed.text || '').trim() };
+  }
+
+  return { ok: false, text: '', error: 'Add a Gemini or OpenAI API key in Settings -> AI for voice input.' };
+}
+
+module.exports = { complete, fetchModels, transcribeAudio };

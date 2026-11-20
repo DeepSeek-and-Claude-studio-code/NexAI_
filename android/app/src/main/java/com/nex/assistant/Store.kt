@@ -136,6 +136,10 @@ class Store(private val ctx: Context) {
         get() = accountSp().getBoolean("auto_speak", false)
         set(v) { accountSp().edit().putBoolean("auto_speak", v).apply() }
 
+    var wakeWordEnabled: Boolean
+        get() = accountSp().getBoolean("wake_word_enabled", false)
+        set(v) { accountSp().edit().putBoolean("wake_word_enabled", v).apply() }
+
     var userName: String
         get() = accountSp().getString("user_name", "") ?: ""
         set(v) { accountSp().edit().putString("user_name", v).apply() }

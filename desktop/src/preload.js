@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('nexApi', {
   pickAttachments: () => ipcRenderer.invoke('nex:pickAttachments'),
   sendMessage: (payload) => ipcRenderer.invoke('nex:sendMessage', payload),
   cancelGeneration: () => ipcRenderer.invoke('nex:cancelGeneration'),
+  transcribeAudio: (payload) => ipcRenderer.invoke('nex:transcribeAudio', payload),
+  setSphereVisual: (state, label) => ipcRenderer.invoke('nex:setSphereVisual', { state, label }),
   resolveConfirmation: (approved) => ipcRenderer.invoke('nex:resolveConfirmation', approved),
 
   // Memory

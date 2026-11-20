@@ -417,7 +417,7 @@ function startLocalBridge() {
 }
 
 function registerIpc() {
-ipcMain.handle('nex:getBootstrap', () => ({
+  ipcMain.handle('nex:getBootstrap', () => ({
     constants: {
       PROVIDERS: constants.PROVIDERS,
       DEFAULT_MODELS: constants.DEFAULT_MODELS,
@@ -440,7 +440,7 @@ ipcMain.handle('nex:getBootstrap', () => ({
       store.meta.googleClientId = String(patch.googleClientId || '').trim();
     }
     const allowed = [
-      'lang', 'voice', 'speechRate', 'autoSpeak', 'userName',
+      'lang', 'voice', 'speechRate', 'autoSpeak', 'wakeWordEnabled', 'userName',
       'showCompanion', 'selectedProfileId', 'manualProvider', 'manualModel',
       'imageModel', 'videoModel', 'lastGenMode', 'effort', 'webSearchEnabled',
       'memoryEnabled', 'memoryAutoSave', 'confirmSensitiveActions', 'permissions', 'driveAutoSync', 'driveFolderMode'
@@ -802,6 +802,24 @@ ipcMain.handle('nex:getBootstrap', () => ({
     } finally {
       broadcastSphere('idle');
     }
+  });
+
+  ipcMain.handle('nex:transcribeAudio', async (_e, { audioBase64, mimeType, wakeCheck }) => {
+    const keys = store.getAllApiKeys();
+    return await llm.transcribeAudio({
+      geminiKey: keys.Gemini || '',
+      openaiKey: keys.OpenAI || '',
+      geminiModels: store.state.modelCatalog?.Gemini || [],
+      audioBase64,
+      mimeType,
+      lang: store.state.lang || 'ru',
+      wakeCheck: Boolean(wakeCheck)
+    });
+  });
+
+  ipcMain.handle('nex:setSphereVisual', (_e, { state, label }) => {
+    broadcastSphere(state, label);
+    return { ok: true };
   });
 
   ipcMain.handle('nex:cancelGeneration', () => {
