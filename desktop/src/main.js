@@ -417,8 +417,15 @@ function startLocalBridge() {
 }
 
 function registerIpc() {
-  ipcMain.handle('nex:getBootstrap', () => ({
-    constants,
+ipcMain.handle('nex:getBootstrap', () => ({
+    constants: {
+      PROVIDERS: constants.PROVIDERS,
+      DEFAULT_MODELS: constants.DEFAULT_MODELS,
+      IMAGE_MODELS: constants.IMAGE_MODELS,
+      VIDEO_MODELS: constants.VIDEO_MODELS,
+      EFFORTS: constants.EFFORTS,
+      NEX_PROFILES: constants.NEX_PROFILES
+    },
     state: store.publicSnapshot(),
     sphere: currentSphere,
     confirmation: safety.active,
