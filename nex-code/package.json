@@ -1,0 +1,17 @@
+{
+  "name": "nex-code",
+  "version": "1.0.0",
+  "description": "Nex Code \u2014 terminal AI coding agent for Windows and Linux",
+  "bin": {
+    "nex-code": "bin/nex-code.js",
+    "nex": "bin/nex-code.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node bin/nex-code.js",
+    "check": "node -c bin/nex-code.js && node -c src/cli.js && node -c src/llm.js && node -c src/tools.js"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src data: blob: 'self'; img-src 'self' file: data: blob:; media-src 'self' file: data: blob:;">
+<title>Nex</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="shell" id="shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="sb-top">
+      <button class="sb-btn primary" id="btnNewChat">+ Новый чат</button>
+      <button class="sb-btn" id="btnProjects">Проекты</button>
+      <button class="sb-btn" id="btnArtifacts">Артефакты</button>
+      <button class="sb-btn" id="btnStudio">Фото и видео</button>
+      <button class="sb-btn" id="btnNexCode">Nex Code (терминал)</button>
+    </div>
+    <div class="sb-label" id="lblChats">Чаты</div>
+    <div class="sb-chats" id="chatList"></div>
+    <div class="sb-foot">
+      <button class="sb-btn" id="btnSettings">Настройки</button>
+      <button class="sb-btn" id="btnAccount"><span class="avatar" id="sbAvatar">Я</span><span id="sbAccLabel">Аккаунт</span></button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn" id="btnToggleSb" title="Menu">☰</button>
+      <div class="title" id="topTitle">Nex</div>
+      <button class="pill-btn" id="btnModelPill">Nex Quark ▾</button>
+      <button class="icon-btn" id="btnToggleComp" title="Companion">◉</button>
+    </header>
+
+    <section class="view" id="viewChat">
+      <div class="sphere-strip">
+        <canvas id="mainSphere" width="180" height="180"></canvas>
+        <div class="status-text" id="statusText">Готов к работе</div>
+      </div>
+
+      <div class="folder-bar" id="folderBar" hidden>
+        <span id="folderBarText"></span>
+        <button class="pill-btn small" id="btnChangeFolder">Выбрать папку</button>
+      </div>
+
+      <div class="messages" id="messages"></div>
+
+      <div class="chips-bar" id="chipsBar" hidden></div>
+
+      <div class="composer">
+        <div class="plus-wrap">
+          <button class="icon-btn round" id="btnPlus" title="+">+</button>
+          <div class="plus-menu" id="plusMenu" hidden></div>
+        </div>
+        <textarea id="chatInput" rows="1" placeholder="Напиши Нексу…"></textarea>
+        <button class="icon-btn round send-btn" id="btnSend">↑</button>
+      </div>
+    </section>
+
+    <section class="view page" id="viewProjects" hidden></section>
+    <section class="view page" id="viewArtifacts" hidden></section>
+    <section class="view page" id="viewArtifactDetail" hidden></section>
+    <section class="view page" id="viewStudio" hidden></section>
+    <section class="view page" id="viewSettings" hidden></section>
+    <section class="view page" id="viewAccount" hidden></section>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modelModal" hidden>
+  <div class="modal-card" id="modelModalBody"></div>
+</div>
+
+<div class="onb-overlay" id="onbOverlay" hidden>
+  <div class="onb-card" id="onbCard"></div>
+</div>
+
+<script src="sphere.js"></script>
+<script src="studio.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

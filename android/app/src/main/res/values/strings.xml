@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Nex</string>
+    <string name="accessibility_desc">Allows Nex to read screen content, launch apps, and tap controls only when you ask. Purchases always require your explicit confirmation.</string>
+</resources>
