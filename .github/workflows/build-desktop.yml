@@ -44,15 +44,19 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install rpmbuild for Fedora RPM packaging
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
       - name: Install dependencies
         run: npm install
 
-      - name: Build Linux AppImage & DEB
+      - name: Build Linux RPM (Fedora), AppImage & DEB
         run: npm run dist:linux
 
       - uses: actions/upload-artifact@v4
         with:
           name: nex-desktop-linux
           path: |
+            desktop/dist/*.rpm
             desktop/dist/*.AppImage
             desktop/dist/*.deb
