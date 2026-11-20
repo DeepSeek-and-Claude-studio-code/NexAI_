@@ -1,7 +1,7 @@
 {
   "name": "nex-desktop",
   "productName": "Nex",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Nex AI Agent & Desktop Companion for Windows and Linux",
   "main": "src/main.js",
   "author": "Nex",
@@ -53,10 +53,26 @@
       "createStartMenuShortcut": true
     },
     "linux": {
-      "icon": "assets/icon.png",
+      "icon": "assets/icons",
       "category": "Utility",
       "maintainer": "Nex <nex@local>",
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "Name": "Nex",
+          "Comment": "Nex AI Agent & Desktop Companion",
+          "StartupWMClass": "nex-desktop",
+          "StartupNotify": "true",
+          "Categories": "Utility;"
+        }
+      },
       "target": [
+        {
+          "target": "rpm",
+          "arch": [
+            "x64"
+          ]
+        },
         {
           "target": "AppImage",
           "arch": [
@@ -73,5 +89,6 @@
       "artifactName": "Nex-${version}-${arch}.${ext}"
     }
   },
-  "homepage": "https://github.com/DeepSeek-and-Claude-studio-code/NexAI_"
+  "homepage": "https://github.com/DeepSeek-and-Claude-studio-code/NexAI_",
+  "desktopName": "nex-desktop.desktop"
 }

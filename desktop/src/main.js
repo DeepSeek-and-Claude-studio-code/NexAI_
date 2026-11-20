@@ -159,7 +159,7 @@ function createMainWindow() {
     minWidth: 800,
     minHeight: 580,
     title: 'Nex',
-    icon: path.join(__dirname, '..', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    icon: nativeImage.createFromPath(path.join(__dirname, '..', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png')),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -1097,6 +1097,8 @@ function registerIpc() {
   });
   ipcMain.handle('nex:openNexCode', () => { launchNexCodeTerminal(); return { ok: true }; });
 }
+
+app.setName('Nex');
 
 app.whenReady().then(() => {
   store = new NexStore(app.getPath('userData'), safeStorage);
