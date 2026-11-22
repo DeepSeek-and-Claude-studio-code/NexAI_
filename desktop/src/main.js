@@ -17,6 +17,7 @@ const {
   dialog,
   shell,
   clipboard,
+  desktopCapturer,
   safeStorage
 } = require('electron');
 
@@ -25,6 +26,8 @@ const { NexStore } = require('./store');
 const { SafetyGuard } = require('./safety');
 const auth = require('./auth');
 const storage = require('./storage');
+const devices = require('./devices');
+const rag = require('./rag');
 const { DesktopNexCodeManager } = require('./nexcode');
 const llm = require('./llm');
 const tts = require('./tts');
@@ -34,10 +37,13 @@ const { runAgentTurn } = require('./agent');
 
 const BRIDGE_PORT = 47800;
 
-let store;
-let safety;
+let store = null;
+let safety = null;
+let nexCodeMgr = null;
+let modelRefreshTimer = null;
 let mainWin = null;
 let companionWin = null;
+let spotlightWin = null;
 let tray = null;
 let bridgeServer = null;
 let isQuitting = false;
@@ -236,6 +242,33 @@ function createCompanionWindow() {
   companionWin.on('closed', () => { companionWin = null; });
 }
 
+async function captureScreenImage() {
+  try {
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1280, height: 720 } });
+    if (!sources || !sources.length) return null;
+    const png = sources[0].thumbnail.toPNG();
+    if (!png || png.length < 100) return null;
+    return { mimeType: 'image/png', base64: png.toString('base64'), name: `screen_${Date.now()}.png` };
+  } catch (_) { return null; }
+}
+
+function toggleSpotlight() {
+  if (spotlightWin && !spotlightWin.isDestroyed()) {
+    if (spotlightWin.isVisible()) { spotlightWin.hide(); return; }
+    spotlightWin.show(); spotlightWin.focus(); return;
+  }
+  const { width } = screen.getPrimaryDisplay().workAreaSize;
+  spotlightWin = new BrowserWindow({
+    width: 640, height: 150, x: Math.round((width - 640) / 2), y: 120,
+    frame: false, transparent: true, resizable: false, alwaysOnTop: true, skipTaskbar: true, show: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
+  });
+  spotlightWin.loadFile(path.join(__dirname, 'renderer', 'spotlight.html'));
+  spotlightWin.once('ready-to-show', () => { if (spotlightWin && !spotlightWin.isDestroyed()) { spotlightWin.show(); spotlightWin.focus(); } });
+  spotlightWin.on('blur', () => { if (spotlightWin && !spotlightWin.isDestroyed()) spotlightWin.hide(); });
+  spotlightWin.on('closed', () => { spotlightWin = null; });
+}
+
 function toggleCompanion() {
   if (!companionWin || companionWin.isDestroyed()) {
     store.state.showCompanion = true;
@@ -422,36 +455,125 @@ function resolveMediaTarget(mode) {
   return keys[prov] ? { provider: prov, model: s.imageModel } : constants.resolveProfileMedia('foton', mode, keys);
 }
 
+function restartLocalBridge() {
+  if (bridgeServer) {
+    try { bridgeServer.close(); } catch (_) {}
+    bridgeServer = null;
+  }
+  startLocalBridge();
+}
+
 function startLocalBridge() {
   const validStates = new Set(['idle', 'listening', 'thinking', 'working', 'speaking']);
+  const bindHost = store.state.lanBridgeEnabled !== false ? '0.0.0.0' : '127.0.0.1';
+
   bridgeServer = http.createServer((req, res) => {
-    if (req.method !== 'POST' || req.url !== '/state') {
-      res.writeHead(404);
-      return res.end();
+    const sendJson = (code, obj) => {
+      res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(obj));
+    };
+
+    // 1. Local Nex Code companion sphere state update
+    if (req.method === 'POST' && req.url === '/state') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body);
+          broadcastSphere(validStates.has(parsed.state) ? parsed.state : 'idle', typeof parsed.label === 'string' ? parsed.label.slice(0, 120) : '');
+          sendJson(200, { ok: true });
+        } catch (_) { sendJson(400, { ok: false }); }
+      });
+      return;
     }
-    let body = '';
-    let tooLarge = false;
-    req.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 4096) { tooLarge = true; req.destroy(); }
-    });
-    req.on('end', () => {
-      if (tooLarge) return;
-      try {
-        const parsed = JSON.parse(body);
-        const st = validStates.has(parsed.state) ? parsed.state : 'idle';
-        const lbl = typeof parsed.label === 'string' ? parsed.label.slice(0, 120) : '';
-        broadcastSphere(st, lbl);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end('{"ok":true}');
-      } catch (_) {
-        res.writeHead(400);
-        res.end('{"ok":false}');
+
+    // 2. Authenticated Device Endpoints (Android <-> Fedora PC)
+    const token = String(req.headers['x-nex-token'] || '').trim().toUpperCase();
+    const expected = String(store.state.devicePairingToken || '').trim().toUpperCase();
+    if (!expected || token !== expected) {
+      return sendJson(401, { ok: false, error: 'Invalid pairing token' });
+    }
+
+    if (req.method === 'GET' && req.url === '/device/info') {
+      const info = devices.getThisDeviceInfo(store, BRIDGE_PORT);
+      const target = resolveTextTarget();
+      const callerName = String(req.headers['x-nex-device-name'] || '').trim();
+      const callerId = String(req.headers['x-nex-device-id'] || '').trim();
+      if (callerId && callerName) {
+        const list = store.state.pairedDevices || [];
+        const idx = list.findIndex(d => d.id === callerId);
+        const rec = { id: callerId, name: callerName, platform: 'Android', lastSeenAt: Date.now() };
+        if (idx >= 0) list[idx] = rec; else list.unshift(rec);
+        store.state.pairedDevices = list.slice(0, 12);
+        store.save();
+        broadcastState();
       }
-    });
+      return sendJson(200, {
+        ok: true,
+        device: {
+          id: info.id,
+          name: info.name,
+          platform: info.platform,
+          activeModel: target ? `${target.provider} · ${target.model}` : 'No API key',
+          uptimeSec: info.uptimeSec,
+          telemetry: info.telemetry
+        }
+      });
+    }
+
+    if (req.method === 'GET' && req.url === '/device/clipboard') return sendJson(200, { ok: true, text: clipboard.readText() || '' });
+    if (req.method === 'POST' && req.url === '/device/clipboard') {
+      let body = ''; req.on('data', (c) => { body += c; if (body.length > 65536) req.destroy(); });
+      req.on('end', () => { try { clipboard.writeText(String(JSON.parse(body || '{}').text || '')); sendJson(200, { ok: true }); } catch (_) { sendJson(400, { ok: false, error: 'Bad JSON' }); } });
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/device/command') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 65536) req.destroy(); });
+      req.on('end', async () => {
+        try {
+          const parsed = JSON.parse(body || '{}');
+          const prompt = String(parsed.command || '').trim();
+          const fromDevice = String(parsed.fromDevice || 'Android').trim();
+          if (!prompt) return sendJson(400, { ok: false, error: 'Empty command' });
+
+          const target = resolveTextTarget();
+          if (!target) return sendJson(400, { ok: false, error: 'No API key configured on PC' });
+
+          broadcastSphere('working', `${fromDevice}: ${prompt.slice(0, 48)}`);
+          const resAgent = await runAgentTurn({
+            store,
+            safety,
+            electronShell: shell,
+            electronClipboard: clipboard,
+            provider: target.provider,
+            model: target.model,
+            apiKey: store.getApiKey(target.provider),
+            effort: store.state.effort,
+            projectFolder: '',
+            history: [{ role: 'user', text: `[Remote command from ${fromDevice}]: ${prompt}` }],
+            onStatus: (st, lbl) => broadcastSphere(st, lbl),
+            signal: new AbortController().signal
+          });
+          const reply = resAgent.finalText || 'Done.';
+          store.state.remoteHistory = [{ id: crypto.randomUUID(), from: fromDevice, command: prompt, reply: reply.slice(0, 1200), ts: Date.now() }, ...(store.state.remoteHistory || [])].slice(0, 30);
+          store.save();
+          broadcastState();
+          broadcastSphere('idle', undefined, '');
+          sendJson(200, { ok: true, reply });
+        } catch (err) {
+          broadcastSphere('idle', undefined, '');
+          sendJson(500, { ok: false, error: err.message });
+        }
+      });
+      return;
+    }
+
+    sendJson(404, { ok: false, error: 'Not found' });
   });
+
   bridgeServer.on('error', () => {});
-  bridgeServer.listen(BRIDGE_PORT, '127.0.0.1');
+  bridgeServer.listen(BRIDGE_PORT, bindHost);
 }
 
 function registerIpc() {
@@ -482,7 +604,7 @@ function registerIpc() {
       'lang', 'voice', 'speechRate', 'autoSpeak', 'wakeWordEnabled', 'userName',
       'showCompanion', 'selectedProfileId', 'manualProvider', 'manualModel',
       'imageModel', 'videoModel', 'lastGenMode', 'effort', 'webSearchEnabled',
-      'memoryEnabled', 'memoryAutoSave', 'confirmSensitiveActions', 'permissions', 'driveAutoSync', 'driveFolderMode', 'customBaseUrl', 'autoRefreshModels', 'autoFailover'
+      'memoryEnabled', 'memoryAutoSave', 'confirmSensitiveActions', 'permissions', 'driveAutoSync', 'driveFolderMode', 'customBaseUrl', 'autoRefreshModels', 'autoFailover', 'themeMode', 'sidebarCollapsed'
     ];
     for (const key of allowed) {
       if (Object.prototype.hasOwnProperty.call(patch, key)) {
@@ -680,7 +802,8 @@ function registerIpc() {
       id: crypto.randomUUID(),
       name: String(name || '').trim() || `Project ${store.state.projects.length + 1}`,
       description: String(description || '').trim(),
-      folderPath: ''
+      folderPath: '',
+      instructions: ''
     };
     store.state.projects.unshift(proj);
     store.save();
@@ -873,6 +996,118 @@ function registerIpc() {
     return { ok: true };
   });
 
+  ipcMain.handle('nex:testVoice', async () => {
+    const isEn = store.state.lang === 'en';
+    const fem = store.state.voice === 'f';
+    const sample = isEn
+      ? `Hi! I am ${fem ? 'Nexi' : 'Nex'}. Voice output is working properly.`
+      : `Привет! Я ${fem ? 'Некси' : 'Некс'}. Голос работает отлично.`;
+    speakReplyIfNeeded(sample, true).catch(() => {});
+    return { ok: true };
+  });
+
+  ipcMain.handle('nex:updateProject', (_e, { id, name, description, instructions }) => {
+    const proj = store.state.projects.find(p => p.id === id);
+    if (proj) { if (name !== undefined && String(name).trim()) proj.name = String(name).trim(); if (description !== undefined) proj.description = String(description).trim(); if (instructions !== undefined) proj.instructions = String(instructions); store.save(); broadcastState(); }
+    return { ok: true };
+  });
+  ipcMain.handle('nex:reindexProjectRag', (_e, projectId) => {
+    const proj = store.state.projects.find(p => p.id === projectId);
+    if (!proj || !proj.folderPath) return { ok: false, files: 0, chunks: 0 };
+    const idx = rag.indexFolder(proj.folderPath, true); return { ok: true, files: idx.files, chunks: idx.chunks.length };
+  });
+  ipcMain.handle('nex:updateMediaTags', (_e, { id, tags }) => {
+    const item = (store.state.mediaItems || []).find(m => m.id === id);
+    if (item) { item.tags = Array.isArray(tags) ? tags.map(t => String(t).trim()).filter(Boolean) : []; store.save(); broadcastState(); }
+    return { ok: true };
+  });
+  ipcMain.handle('nex:nexCodeRollback', (_e, checkpointId) => {
+    const res = nexCodeMgr.rollbackCheckpoint(checkpointId);
+    if (res.ok && res.snapshot && mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('nex:nexCodeUpdate', res.snapshot);
+    return res;
+  });
+  ipcMain.handle('nex:getQuotaDashboard', () => llm.getQuotaDashboard({ apiKeys: store.getAllApiKeys(), customBaseUrl: store.state.customBaseUrl || '', profileId: store.state.selectedProfileId || 'quark', modelCatalog: store.state.modelCatalog }));
+  ipcMain.handle('nex:resetProviderCooldown', (_e, provider) => {
+    if (provider) llm.clearProviderCooldown(provider);
+    return llm.getQuotaDashboard({ apiKeys: store.getAllApiKeys(), customBaseUrl: store.state.customBaseUrl || '', profileId: store.state.selectedProfileId || 'quark', modelCatalog: store.state.modelCatalog });
+  });
+  ipcMain.handle('nex:captureScreen', async () => { const cap = await captureScreenImage(); return cap ? { ok: true, ...cap } : { ok: false, error: 'Screen capture unavailable' }; });
+  ipcMain.handle('nex:stopSpeech', () => { tts.stopNativeSpeech(); isSpeakingNow = false; if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('nex:stopSpeak'); broadcastSphere('idle', undefined, ''); return { ok: true }; });
+  ipcMain.handle('nex:editMessage', async (_e, { chatId, messageId, newText }) => {
+    const s = store.state, chat = s.chats.find(c => c.id === (chatId || s.activeChatId)); if (!chat) return { ok: false, error: 'Chat not found' };
+    const idx = chat.messages.findIndex(m => m.id === messageId && m.role === 'user'); if (idx < 0) return { ok: false, error: 'Message not found' };
+    const clean = String(newText || '').trim(); if (!clean) return { ok: false, error: 'Empty message' };
+    chat.messages = chat.messages.slice(0, idx); chat.updatedAt = Date.now(); store.save(); broadcastState(); return { ok: true, resendText: clean };
+  });
+  ipcMain.handle('nex:regenerateLast', async (_e, chatId) => {
+    const s = store.state, chat = s.chats.find(c => c.id === (chatId || s.activeChatId)); if (!chat) return { ok: false, error: 'Chat not found' };
+    let lastUserIdx = -1; for (let i = chat.messages.length - 1; i >= 0; i--) { if (chat.messages[i].role === 'user') { lastUserIdx = i; break; } }
+    if (lastUserIdx < 0) return { ok: false, error: 'No user message' };
+    const resendText = String(chat.messages[lastUserIdx].text || '').trim();
+    chat.messages = chat.messages.slice(0, lastUserIdx); chat.updatedAt = Date.now(); store.save(); broadcastState(); return { ok: true, resendText };
+  });
+  ipcMain.handle('nex:spotlightClose', () => { if (spotlightWin && !spotlightWin.isDestroyed()) spotlightWin.hide(); return { ok: true }; });
+  ipcMain.handle('nex:spotlightOpenMain', () => { if (spotlightWin && !spotlightWin.isDestroyed()) spotlightWin.hide(); createMainWindow(); return { ok: true }; });
+  ipcMain.handle('nex:spotlightSend', async (_e, { text, includeScreen }) => {
+    const prompt = String(text || '').trim(); if (!prompt) return { ok: false, error: 'Empty' };
+    const target = resolveTextTarget(); if (!target) return { ok: false, error: store.state.lang === 'en' ? 'Add an API key in Settings -> AI.' : 'Добавь API-ключ в Настройках → ИИ.' };
+    if (spotlightWin && !spotlightWin.isDestroyed()) spotlightWin.setSize(640, 340);
+    const imgs = []; if (includeScreen) { const cap = await captureScreenImage(); if (cap) imgs.push({ mimeType: cap.mimeType, base64: cap.base64 }); }
+    try {
+      const resAgent = await runAgentTurn({ store, safety, electronShell: shell, electronClipboard: clipboard, provider: target.provider, model: target.model, apiKey: store.getApiKey(target.provider), effort: store.state.effort, projectFolder: '', projectInstructions: '', history: [{ role: 'user', text: prompt, images: imgs }], onStatus: (st, lbl) => broadcastSphere(st, lbl), signal: new AbortController().signal });
+      broadcastSphere('idle', undefined, ''); return { ok: true, reply: resAgent.finalText || 'Done.' };
+    } catch (err) { broadcastSphere('idle', undefined, ''); return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('nex:devicesSaveEcosystem', (_e, eco) => { store.state.ecosystemDevices = devices.mergeEcosystemDevices(eco); store.save(); broadcastState(); scheduleDriveStateSync(); return { ok: true, ecosystem: store.state.ecosystemDevices }; });
+  ipcMain.handle('nex:devicesHubSetup', (_e, { model, name, wifiSsid }) => {
+    const eco = devices.mergeEcosystemDevices(store.state.ecosystemDevices);
+    const hub = { id: `hub_${Date.now().toString(36)}`, model: model === 'Nex Hub' ? 'Nex Hub' : 'Nex Hub Ultra', name: String(name || model || 'Nex Hub Ultra').trim(), connected: true, connectionType: 'Wi-Fi', wifiSsid: String(wifiSsid || '').trim(), activity: 'Готов к работе', character: store.state.voice === 'f' ? 'f' : 'm', brightness: 75, cameraTracking: true, volume: 65, audioService: 'Яндекс Музыка', nightDnd: false, keysSyncedAt: Date.now(), lastIntercom: '' };
+    eco.hubs = [hub, ...eco.hubs.filter(h => h.id !== 'hub_living' || h.connected)];
+    store.state.ecosystemDevices = eco; store.save(); broadcastState(); return { ok: true, ecosystem: eco };
+  });
+  ipcMain.handle('nex:devicesHubIntercom', (_e, { hubId, message }) => {
+    const eco = devices.mergeEcosystemDevices(store.state.ecosystemDevices); const hub = eco.hubs.find(h => h.id === hubId);
+    if (hub) { hub.lastIntercom = String(message || '').trim(); hub.activity = `Интерком: ${hub.lastIntercom.slice(0, 42)}`; store.state.ecosystemDevices = eco; store.save(); broadcastState(); }
+    return { ok: true, ecosystem: eco };
+  });
+  ipcMain.handle('nex:devicesSyncHubKeys', (_e, hubId) => {
+    const eco = devices.mergeEcosystemDevices(store.state.ecosystemDevices); const hub = eco.hubs.find(h => h.id === hubId);
+    if (hub) { hub.keysSyncedAt = Date.now(); hub.activity = 'Ключи ИИ синхронизированы'; store.state.ecosystemDevices = eco; store.save(); broadcastState(); }
+    return { ok: true, count: Object.values(store.getAllApiKeys()).filter(Boolean).length, ecosystem: eco };
+  });
+  ipcMain.handle('nex:devicesClipboardPush', (_e, text) => { clipboard.writeText(String(text || '')); return { ok: true }; });
+  ipcMain.handle('nex:devicesGet', () => ({
+    ecosystem: devices.mergeEcosystemDevices(store.state.ecosystemDevices),
+    clipboardPreview: String(clipboard.readText() || '').slice(0, 200),
+    thisDevice: devices.getThisDeviceInfo(store, BRIDGE_PORT),
+    pairedDevices: store.state.pairedDevices || [],
+    remoteHistory: store.state.remoteHistory || []
+  }));
+
+  ipcMain.handle('nex:devicesUpdate', (_e, patch) => {
+    if (patch.deviceName !== undefined) store.state.deviceName = String(patch.deviceName).trim();
+    const lanChanged = patch.lanBridgeEnabled !== undefined && Boolean(patch.lanBridgeEnabled) !== (store.state.lanBridgeEnabled !== false);
+    if (patch.lanBridgeEnabled !== undefined) store.state.lanBridgeEnabled = Boolean(patch.lanBridgeEnabled);
+    store.save();
+    if (lanChanged) restartLocalBridge();
+    broadcastState();
+    return { ok: true, thisDevice: devices.getThisDeviceInfo(store, BRIDGE_PORT) };
+  });
+
+  ipcMain.handle('nex:devicesRegenToken', () => {
+    store.state.devicePairingToken = devices.generatePairingToken();
+    store.save();
+    broadcastState();
+    return { ok: true, token: store.state.devicePairingToken };
+  });
+
+  ipcMain.handle('nex:devicesRemovePaired', (_e, id) => {
+    store.state.pairedDevices = (store.state.pairedDevices || []).filter(d => d.id !== id);
+    store.save();
+    broadcastState();
+    return { ok: true };
+  });
+
   ipcMain.handle('nex:speechFinished', () => {
     isSpeakingNow = false;
     if (mainWin && !mainWin.isDestroyed()) {
@@ -933,7 +1168,9 @@ function registerIpc() {
     const s = store.state;
     const isEn = s.lang === 'en';
     const cleanText = String(text || '').trim();
-    const atts = Array.isArray(attachments) ? attachments : [];
+    const atts = Array.isArray(attachments) ? [...attachments] : [];
+    const wantsScreen = /(посмотри\s+на\s+экран|что\s+на\s+экране|глянь\s+на\s+экран|look\s+at\s+(?:my\s+)?screen|what'?s\s+on\s+my\s+screen)/i.test(cleanText);
+    if (wantsScreen && !atts.some(a => a && a.isImage)) { const cap = await captureScreenImage(); if (cap) atts.push({ name: cap.name, mimeType: cap.mimeType, isImage: true, base64: cap.base64 }); }
     if (!cleanText && !atts.length) return { ok: false };
 
     let chat = s.chats.find(c => c.id === s.activeChatId);
@@ -1003,7 +1240,7 @@ function registerIpc() {
       const memMatch = /^(?:запомни|remember)[\s:,-]+(.+)/i.exec(cleanText);
       if (memMatch && s.memoryAutoSave && s.memoryEnabled) {
         const fact = memMatch[1].trim();
-        if (fact && !s.memories.includes(fact)) s.memories.unshift(fact);
+        if (fact && !s.memories.some(x => (typeof x === 'string' ? x : x.text) === fact)) s.memories.unshift({ id: crypto.randomUUID(), text: fact, category: 'personal', updatedAt: Date.now() });
         const reply = isEn ? `Remembered: "${fact}".` : `Запомнил: «${fact}».`;
         chat.messages.push({ id: crypto.randomUUID(), role: 'assistant', text: reply, timestamp: Date.now() });
         store.save();
@@ -1044,6 +1281,7 @@ function registerIpc() {
         apiKey: store.getApiKey(target.provider),
         effort: s.effort,
         projectFolder: proj?.folderPath || '',
+        projectInstructions: proj?.instructions || '',
         history: llmHistory,
         onStatus: (st, lbl) => broadcastSphere(st, lbl),
         signal
@@ -1068,7 +1306,7 @@ function registerIpc() {
       broadcastState();
 
       const shouldSpeak = Boolean(fromVoice || s.autoSpeak);
-      await speakReplyIfNeeded(finalReply, shouldSpeak);
+      if (shouldSpeak) { speakReplyIfNeeded(finalReply, true).catch(() => {}); }
       return { ok: true };
     } catch (err) {
       const textMsg = err?.name === 'AbortError'
@@ -1085,12 +1323,25 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle('nex:addMemory', (_e, fact) => {
-    const clean = String(fact || '').trim();
-    if (clean && !store.state.memories.includes(clean)) {
-      store.state.memories.unshift(clean);
-      store.save();
-      broadcastState();
+  ipcMain.handle('nex:addMemory', (_e, payload) => {
+    const rawText = typeof payload === 'string' ? payload : payload?.text;
+    const category = (typeof payload === 'object' && payload?.category) ? String(payload.category) : 'personal';
+    const clean = String(rawText || '').trim();
+    if (clean && !store.state.memories.some(x => (typeof x === 'string' ? x : x.text) === clean)) {
+      store.state.memories.unshift({ id: crypto.randomUUID(), text: clean, category, updatedAt: Date.now() });
+      store.save(); broadcastState();
+    }
+    return store.publicSnapshot();
+  });
+  ipcMain.handle('nex:updateMemory', (_e, { index, text, category }) => {
+    const item = store.state.memories[index];
+    if (item) {
+      const clean = String(text || '').trim();
+      if (clean) {
+        if (typeof item === 'string') store.state.memories[index] = { id: crypto.randomUUID(), text: clean, category: category || 'personal', updatedAt: Date.now() };
+        else { item.text = clean; if (category) item.category = category; item.updatedAt = Date.now(); }
+        store.save(); broadcastState();
+      }
     }
     return store.publicSnapshot();
   });
@@ -1133,14 +1384,34 @@ function registerIpc() {
   ipcMain.handle('nex:updateArtifact', (_e, { id, content, title }) => {
     const art = store.state.artifacts.find(a => a.id === id);
     if (art) {
-      if (typeof content === 'string') art.content = content;
+      if (typeof content === 'string' && content !== art.content) {
+        art.versions = Array.isArray(art.versions) ? art.versions : [];
+        const lastTs = art.versions[0]?.ts || 0;
+        if (Date.now() - lastTs > 8000 || !art.versions.length) {
+          art.versions.unshift({ ts: Date.now(), title: art.title, content: art.content });
+          art.versions = art.versions.slice(0, 12);
+        }
+        art.content = content;
+      }
       if (typeof title === 'string' && title.trim()) art.title = title.trim();
-      store.save();
-      broadcastState();
-      autoUploadArtifactToDrive(art);
-      scheduleDriveStateSync();
+      store.save(); broadcastState(); autoUploadArtifactToDrive(art); scheduleDriveStateSync();
     }
     return { ok: true };
+  });
+  ipcMain.handle('nex:restoreArtifactVersion', (_e, { id, vIndex }) => {
+    const art = store.state.artifacts.find(a => a.id === id); const v = art?.versions?.[vIndex];
+    if (art && v) { art.versions.unshift({ ts: Date.now(), title: art.title, content: art.content }); art.versions = art.versions.slice(0, 12); art.content = v.content; if (v.title) art.title = v.title; store.save(); broadcastState(); }
+    return { ok: true };
+  });
+  ipcMain.handle('nex:exportArtifactPdf', async (_e, id) => {
+    const art = store.state.artifacts.find(a => a.id === id); if (!art) return { ok: false };
+    const res = await dialog.showSaveDialog(mainWin, { defaultPath: `${art.title.replace(/[^\wа-яА-ЯёЁ -]/g, '_')}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (res.canceled || !res.filePath) return { ok: false };
+    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const htmlDoc = art.type === 'html' ? art.content : `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;padding:32px;color:#1c1b19;line-height:1.55}pre{white-space:pre-wrap;background:#f5f3ee;padding:16px;border-radius:10px;font-family:monospace}</style></head><body><h1>${esc(art.title)}</h1><pre>${esc(art.content)}</pre></body></html>`;
+    const pWin = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
+    try { await pWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlDoc)); const pdfBuf = await pWin.webContents.printToPDF({ printBackground: true }); fs.writeFileSync(res.filePath, pdfBuf); return { ok: true, filePath: res.filePath }; }
+    catch (e) { return { ok: false, error: e.message }; } finally { pWin.destroy(); }
   });
 
   ipcMain.handle('nex:deleteArtifact', (_e, id) => {
@@ -1244,6 +1515,9 @@ app.setName('Nex');
 
 app.whenReady().then(() => {
   store = new NexStore(app.getPath('userData'), safeStorage);
+  if (!store.state.deviceId) store.state.deviceId = crypto.randomUUID();
+  if (!store.state.devicePairingToken) store.state.devicePairingToken = devices.generatePairingToken();
+  store.save();
   nexCodeMgr = new DesktopNexCodeManager(app.getPath('userData'));
   safety = new SafetyGuard((pending) => broadcastConfirmation(pending));
   registerIpc();
@@ -1267,6 +1541,7 @@ app.whenReady().then(() => {
 
   globalShortcut.register('CommandOrControl+Alt+N', toggleCompanion);
   globalShortcut.register('CommandOrControl+Shift+N', () => createMainWindow());
+  if (!globalShortcut.register('Alt+Space', toggleSpotlight)) globalShortcut.register('CommandOrControl+Shift+Space', toggleSpotlight);
 });
 
 app.on('before-quit', () => { isQuitting = true; });

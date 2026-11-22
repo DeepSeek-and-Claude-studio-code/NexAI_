@@ -120,6 +120,13 @@
   let driveLiveStatus = '';
   let nexCodeSnap = null;
   let storageStats = null;
+  let devicesSnap = null;
+  let devicesCat = 'all';
+  let quotaSnap = null;
+  let chatSearchQuery = '';
+  let memCatFilter = 'all';
+  let voiceModeActive = false;
+  let vmSphereCtrl = null;
   let storageTab = null;
   let openAccordions = { nex: true };
 
@@ -198,6 +205,7 @@
       artifactDetail: 'viewArtifactDetail',
       studio: 'viewStudio',
       nexcode: 'viewNexCode',
+      devices: 'viewDevices',
       settings: 'viewSettings',
       account: 'viewAccount'
     };
@@ -207,28 +215,51 @@
     renderAll();
   }
 
+  function applyThemeAndAccent() {
+    const mode = state?.themeMode || 'system', prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode);
+    document.documentElement.setAttribute('data-accent', state?.voice === 'f' ? 'nexi' : 'nex');
+    const shell = document.getElementById('shell'); if (shell) shell.classList.toggle('sb-collapsed', Boolean(state?.sidebarCollapsed));
+  }
+  function renderFormattedMessage(container, rawText) {
+    const text = String(rawText || ''), lines = text.split('\n'); let bodyText = text;
+    if (lines[0] && lines[0].startsWith('⚡')) { const det = document.createElement('details'); det.className = 'failover-details'; const sum = document.createElement('summary'); sum.textContent = lines[0]; det.appendChild(sum); container.appendChild(det); bodyText = lines.slice(1).join('\n').trim(); }
+    const fenceRx = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g; let last = 0, m;
+    const appendPlain = (chunk) => { if (!chunk) return; for (const p of chunk.split(/(`[^`\n]+`)/g)) { if (p.startsWith('`') && p.endsWith('`') && p.length >= 2) { const c = document.createElement('code'); c.className = 'inline-code'; c.textContent = p.slice(1, -1); container.appendChild(c); } else if (p) container.appendChild(document.createTextNode(p)); } };
+    while ((m = fenceRx.exec(bodyText))) {
+      appendPlain(bodyText.slice(last, m.index));
+      const lang = (m[1] || 'code').trim(), codeBody = m[2].replace(/\n$/, ''), card = el('div', 'code-card'), head = el('div', 'code-card-head');
+      head.appendChild(el('span', '', lang));
+      const copyBtn = el('button', 'code-copy-btn', state.lang === 'en' ? 'Copy' : 'Копировать');
+      copyBtn.onclick = () => { navigator.clipboard.writeText(codeBody).catch(() => {}); copyBtn.textContent = state.lang === 'en' ? 'Copied ✓' : 'Скопировано ✓'; setTimeout(() => { copyBtn.textContent = state.lang === 'en' ? 'Copy' : 'Копировать'; }, 1400); };
+      head.appendChild(copyBtn); card.appendChild(head); card.appendChild(el('pre', '', codeBody)); container.appendChild(card); last = m.index + m[0].length;
+    }
+    appendPlain(bodyText.slice(last));
+  }
   function renderSidebar() {
+    applyThemeAndAccent();
     document.getElementById('btnNewChat').textContent = tr('new_chat');
     document.getElementById('btnProjects').textContent = tr('projects');
     document.getElementById('btnArtifacts').textContent = tr('artifacts');
     document.getElementById('btnStudio').textContent = tr('studio');
     document.getElementById('btnNexCode').textContent = tr('nex_code');
+    document.getElementById('btnDevices').textContent = tr('devices');
     document.getElementById('lblChats').textContent = tr('chats');
     document.getElementById('btnSettings').textContent = tr('settings');
     const accLabel = state.userName || state.account?.displayName || state.account?.email || tr('account');
     document.getElementById('sbAccLabel').textContent = accLabel;
     document.getElementById('sbAvatar').textContent = (accLabel.trim()[0] || 'Я').toUpperCase();
 
-    const list = document.getElementById('chatList');
-    list.innerHTML = '';
+    const searchInp = document.getElementById('chatSearchInput'); if (searchInp) searchInp.placeholder = state.lang === 'en' ? 'Search chats…' : 'Поиск по чатам…';
+    const q = chatSearchQuery.trim().toLowerCase(), list = document.getElementById('chatList'); list.innerHTML = '';
     for (const c of state.chats) {
-      const row = el('div', 'chat-row' + (c.id === state.activeChatId ? ' active' : ''));
-      const btn = el('button', 'c-title', c.title);
+      let snippet = '';
+      if (q) { const th = String(c.title || '').toLowerCase().includes(q), mh = (c.messages || []).find(m => String(m.text || '').toLowerCase().includes(q)); if (!th && !mh) continue; if (mh) snippet = String(mh.text).replace(/\s+/g, ' ').slice(0, 48); }
+      const row = el('div', 'chat-row' + (c.id === state.activeChatId ? ' active' : '')), btn = el('button', 'c-title');
+      btn.appendChild(el('div', '', c.title)); if (snippet) btn.appendChild(el('div', 'chat-snippet', snippet));
       btn.onclick = async () => { await window.nexApi.openChat(c.id); showView('chat'); };
-      const del = el('button', 'c-del', '×');
-      del.onclick = async (e) => { e.stopPropagation(); await window.nexApi.deleteChat(c.id); };
-      row.appendChild(btn); row.appendChild(del);
-      list.appendChild(row);
+      const del = el('button', 'c-del', '×'); del.onclick = async (e) => { e.stopPropagation(); await window.nexApi.deleteChat(c.id); };
+      row.appendChild(btn); row.appendChild(del); list.appendChild(row);
     }
   }
 
@@ -241,6 +272,7 @@
       artifactDetail: (state.artifacts.find(a => a.id === activeArtifactId)?.title) || tr('artifacts'),
       studio: tr('studio'),
       nexcode: 'Nex Code',
+      devices: tr('devices'),
       settings: tr('settings'),
       account: tr('account')
     };
@@ -289,9 +321,10 @@
       hero.appendChild(grid);
       box.appendChild(hero);
     }
-    for (const m of (hasUserMsg ? msgs : [])) {
+    const renderList = hasUserMsg ? msgs : [], lastAssistantIdx = renderList.map(x => x.role).lastIndexOf('assistant');
+    renderList.forEach((m, idx) => {
       const bubble = el('div', `msg ${m.role}`);
-      if (m.text) bubble.appendChild(document.createTextNode(m.text));
+      if (m.text) renderFormattedMessage(bubble, m.text);
       if (m.attachmentNames?.length) bubble.appendChild(el('div', 'att-meta', '📎 ' + m.attachmentNames.join(', ')));
       if (m.media?.filePath) {
         const fileUrl = 'file://' + (m.media.filePath.startsWith('/') ? '' : '/') + m.media.filePath.replace(/\\/g, '/');
@@ -313,6 +346,26 @@
         mf.appendChild(btns);
         bubble.appendChild(mf);
       }
+      if (!isBusy && (m.role === 'user' || idx === lastAssistantIdx)) {
+        const acts = el('div', 'msg-actions');
+        if (m.role === 'user') {
+          const bEdit = el('button', 'msg-act-btn', state.lang === 'en' ? '✎ Edit' : '✎ Изменить');
+          bEdit.onclick = () => {
+            const editBox = el('div', 'flex-row'); editBox.style.marginTop = '8px';
+            const inp = el('input'); inp.type = 'text'; inp.value = m.text || '';
+            const bSave = el('button', 'btn', 'OK'), bCancel = el('button', 'btn outline', '✕'); bCancel.onclick = () => renderChat();
+            bSave.onclick = async () => { const nv = inp.value.trim(); if (!nv) return; const r = await window.nexApi.editMessage({ chatId: chat.id, messageId: m.id, newText: nv }); if (r && r.ok && r.resendText) { isBusy = true; renderChat(); try { await window.nexApi.sendMessage({ text: r.resendText, attachments: [], genMode: null, fromVoice: false }); } finally { isBusy = false; renderChat(); } } };
+            editBox.appendChild(inp); editBox.appendChild(bSave); editBox.appendChild(bCancel); bubble.appendChild(editBox); inp.focus();
+          };
+          acts.appendChild(bEdit);
+        }
+        if (m.role === 'assistant' && idx === lastAssistantIdx) {
+          const bRegen = el('button', 'msg-act-btn', state.lang === 'en' ? '↻ Regenerate' : '↻ Перегенерировать');
+          bRegen.onclick = async () => { const r = await window.nexApi.regenerateLast(chat.id); if (r && r.ok && r.resendText) { isBusy = true; renderChat(); try { await window.nexApi.sendMessage({ text: r.resendText, attachments: [], genMode: null, fromVoice: false }); } finally { isBusy = false; renderChat(); } } };
+          acts.appendChild(bRegen);
+        }
+        bubble.appendChild(acts);
+      }
       box.appendChild(bubble);
 
       if (m.artifactId) {
@@ -328,7 +381,7 @@
           box.appendChild(card);
         }
       }
-    }
+    });
 
     if (isBusy && !confirmation) {
       const td = el('div', 'msg assistant');
@@ -439,9 +492,19 @@
       const fBtn = el('button', 'pill-btn small', p.folderPath ? tr('change_folder') : tr('choose_folder'));
       fBtn.onclick = () => window.nexApi.pickProjectFolder(p.id);
       head.appendChild(titleBtn); head.appendChild(fBtn);
-      card.appendChild(head);
-      card.appendChild(el('small', '', p.folderPath || tr('no_folder')));
-      root.appendChild(card);
+      card.appendChild(head); card.appendChild(el('small', '', p.folderPath || tr('no_folder')));
+      const rulesTa = el('textarea'); rulesTa.rows = 2; rulesTa.style.marginTop = '8px'; rulesTa.value = p.instructions || '';
+      rulesTa.placeholder = state.lang === 'en' ? 'Project rules / instructions…' : 'Правила проекта (стиль кода, роль ИИ)…';
+      const pActs = el('div', 'flex-row'); pActs.style.marginTop = '6px';
+      const bSaveRules = el('button', 'pill-btn small', state.lang === 'en' ? 'Save Rules' : 'Сохранить правила'), pStat = el('small', '', '');
+      bSaveRules.onclick = async () => { await window.nexApi.updateProject({ id: p.id, instructions: rulesTa.value }); pStat.textContent = state.lang === 'en' ? 'Saved ✓' : 'Сохранено ✓'; };
+      pActs.appendChild(bSaveRules);
+      if (p.folderPath) {
+        const bRag = el('button', 'pill-btn small', state.lang === 'en' ? 'Index RAG' : 'Индексировать RAG');
+        bRag.onclick = async () => { pStat.textContent = '…'; const r = await window.nexApi.reindexProjectRag(p.id); pStat.textContent = r.ok ? `${r.files} files / ${r.chunks} chunks` : 'Error'; };
+        pActs.appendChild(bRag);
+      }
+      pActs.appendChild(pStat); card.appendChild(rulesTa); card.appendChild(pActs); root.appendChild(card);
     }
   }
 
@@ -502,28 +565,27 @@
     const bar = el('div', 'flex-row'); bar.style.marginBottom = '14px';
     const bView = el('button', 'pill-btn small' + (artifactMode === 'view' ? ' active' : ''), tr('view'));
     bView.onclick = () => { artifactMode = 'view'; renderArtifactDetail(); };
-    const bEdit = el('button', 'pill-btn small' + (artifactMode === 'edit' ? ' active' : ''), `${tr('edit')} / ${tr('code')}`);
-    bEdit.onclick = () => { artifactMode = 'edit'; renderArtifactDetail(); };
+    const bEdit = el('button', 'pill-btn small' + (artifactMode === 'edit' ? ' active' : ''), `${tr('edit')} / ${tr('code')}`); bEdit.onclick = () => { artifactMode = 'edit'; renderArtifactDetail(); };
+    const bSplit = el('button', 'pill-btn small' + (artifactMode === 'split' ? ' active' : ''), state.lang === 'en' ? 'Split View' : 'Сплит-экран'); bSplit.onclick = () => { artifactMode = 'split'; renderArtifactDetail(); };
     const spacer = el('span'); spacer.style.flex = '1';
-    const bCopy = el('button', 'pill-btn small', tr('copy'));
-    bCopy.onclick = () => { navigator.clipboard.writeText(art.content); bCopy.textContent = tr('copied'); };
-    const bExp = el('button', 'pill-btn small', tr('export_btn'));
-    bExp.onclick = () => window.nexApi.exportArtifact(art.id);
-    const bDel = el('button', 'pill-btn small', tr('del_btn'));
-    bDel.onclick = async () => { await window.nexApi.deleteArtifact(art.id); showView('artifacts'); };
-    bar.appendChild(bView); bar.appendChild(bEdit); bar.appendChild(spacer); bar.appendChild(bCopy); bar.appendChild(bExp); bar.appendChild(bDel);
-    root.appendChild(bar);
-
-    if (artifactMode === 'edit') {
+    const bCopy = el('button', 'pill-btn small', tr('copy')); bCopy.onclick = () => { navigator.clipboard.writeText(art.content); bCopy.textContent = tr('copied'); };
+    const bExp = el('button', 'pill-btn small', tr('export_btn')); bExp.onclick = () => window.nexApi.exportArtifact(art.id);
+    const bPdf = el('button', 'pill-btn small', 'PDF'); bPdf.onclick = () => window.nexApi.exportArtifactPdf(art.id);
+    const bDel = el('button', 'pill-btn small', tr('del_btn')); bDel.onclick = async () => { await window.nexApi.deleteArtifact(art.id); showView('artifacts'); };
+    bar.appendChild(bView); bar.appendChild(bEdit); bar.appendChild(bSplit); bar.appendChild(spacer); bar.appendChild(bCopy); bar.appendChild(bExp); bar.appendChild(bPdf); bar.appendChild(bDel); root.appendChild(bar);
+    if ((art.versions || []).length) {
+      const vRow = el('div', 'tabs-row'); vRow.appendChild(el('small', '', state.lang === 'en' ? 'Versions:' : 'Версии:'));
+      art.versions.slice(0, 6).forEach((v, vIdx) => { const vb = el('button', 'msg-act-btn', `↩ ${new Date(v.ts).toLocaleTimeString()}`); vb.onclick = () => window.nexApi.restoreArtifactVersion(art.id, vIdx); vRow.appendChild(vb); });
+      root.appendChild(vRow);
+    }
+    if (artifactMode === 'edit' || artifactMode === 'split') {
       const titleInp = el('input'); titleInp.type = 'text'; titleInp.value = art.title; titleInp.style.marginBottom = '10px';
-      const ta = el('textarea'); ta.value = art.content;
-      ta.style.cssText = 'width:100%;height:420px;font-family:ui-monospace,monospace;font-size:13px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:12px;';
-      let tmr = null;
-      const saveLive = () => { clearTimeout(tmr); tmr = setTimeout(() => window.nexApi.updateArtifact(art.id, ta.value, titleInp.value), 350); };
-      titleInp.oninput = saveLive;
-      ta.oninput = saveLive;
-      root.appendChild(titleInp);
-      root.appendChild(ta);
+      const ta = el('textarea'); ta.value = art.content; ta.style.cssText = 'width:100%;height:420px;font-family:ui-monospace,monospace;font-size:13px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:12px;';
+      const prevPane = el('div', 'art-preview-pane');
+      const updatePreview = () => { if (artifactMode !== 'split') return; prevPane.innerHTML = ''; if (art.type === 'html') { const ifr = document.createElement('iframe'); ifr.sandbox = 'allow-scripts'; ifr.style.cssText = 'width:100%;height:400px;border:none;border-radius:8px;background:#fff;'; ifr.srcdoc = ta.value; prevPane.appendChild(ifr); } else renderFormattedMessage(prevPane, ta.value); };
+      let tmr = null; const saveLive = () => { updatePreview(); clearTimeout(tmr); tmr = setTimeout(() => window.nexApi.updateArtifact(art.id, ta.value, titleInp.value), 450); };
+      titleInp.oninput = saveLive; ta.oninput = saveLive; root.appendChild(titleInp);
+      if (artifactMode === 'split') { const sp = el('div', 'art-split'); sp.appendChild(ta); sp.appendChild(prevPane); root.appendChild(sp); updatePreview(); } else root.appendChild(ta);
       return;
     }
 
@@ -679,8 +741,26 @@
         refMsg.textContent = r.updated ? (isEn ? `Updated ${r.updated} provider(s)` : `Обновлено провайдеров: ${r.updated}`) : (isEn ? 'No active keys' : 'Нет активных ключей');
       };
       refRow.appendChild(refBtn); refRow.appendChild(refMsg);
-      autoCard.appendChild(refRow);
-      root.appendChild(autoCard);
+      autoCard.appendChild(refRow); root.appendChild(autoCard);
+      const qCard = el('div', 'card-box'), qHead = el('div', 'flex-row'); qHead.style.justifyContent = 'space-between';
+      qHead.appendChild(el('strong', '', isEn ? 'Live Limits & Usage Dashboard' : 'Дашборд лимитов за день'));
+      const qRef = el('button', 'pill-btn small', isEn ? 'Refresh' : 'Обновить'); qRef.onclick = async () => { quotaSnap = await window.nexApi.getQuotaDashboard(); renderSettings(); };
+      qHead.appendChild(qRef); qCard.appendChild(qHead);
+      if (!quotaSnap) { window.nexApi.getQuotaDashboard().then(q => { quotaSnap = q; if (activeView === 'settings' && activeSettingsTab === 'ai') renderSettings(); }); qCard.appendChild(el('p', 'sub', '…')); }
+      else {
+        const tbl = document.createElement('table'); tbl.className = 'quota-table'; tbl.innerHTML = `<thead><tr><th>#</th><th>${isEn ? 'Provider' : 'Провайдер'}</th><th>${isEn ? 'Status' : 'Статус'}</th><th>${isEn ? 'Req / ~Tok' : 'Запр / ~Ток'}</th><th></th></tr></thead>`;
+        const tb = document.createElement('tbody');
+        for (const row of (quotaSnap.providers || [])) {
+          const trEl = document.createElement('tr'), dotCls = !row.ready ? 'off' : (row.cooldownSec > 0 ? 'warn' : 'ok'), stTxt = !row.ready ? (isEn ? 'No key' : 'Нет ключа') : (row.cooldownSec > 0 ? `${row.cooldownSec}s` : (isEn ? 'Active' : 'Активен'));
+          trEl.appendChild(el('td', '', row.priority ? String(row.priority) : '—')); trEl.appendChild(el('td', '', row.provider));
+          const tdSt = document.createElement('td'); tdSt.appendChild(el('span', `q-dot ${dotCls}`)); tdSt.appendChild(document.createTextNode(stTxt)); trEl.appendChild(tdSt);
+          trEl.appendChild(el('td', '', `${row.requestsToday} / ~${row.estTokensToday}`));
+          const tdAct = document.createElement('td'); if (row.cooldownSec > 0) { const bRes = el('button', 'msg-act-btn', isEn ? 'Reset' : 'Сброс'); bRes.onclick = async () => { quotaSnap = await window.nexApi.resetProviderCooldown(row.provider); renderSettings(); }; tdAct.appendChild(bRes); }
+          trEl.appendChild(tdAct); tb.appendChild(trEl);
+        }
+        tbl.appendChild(tb); qCard.appendChild(tbl);
+      }
+      root.appendChild(qCard);
 
       const metaMap = constants.PROVIDER_META || {};
       for (const p of constants.PROVIDERS) {
@@ -718,24 +798,34 @@
       switchRow(root, tr('auto_speak'), '', state.autoSpeak, (v) => window.nexApi.updateSettings({ autoSpeak: v }));
       switchRow(root, tr('wake_word'), tr('wake_word_d'), state.wakeWordEnabled, (v) => window.nexApi.updateSettings({ wakeWordEnabled: v }));
       switchRow(root, tr('show_comp'), tr('show_comp_desc'), state.showCompanion, (v) => window.nexApi.updateSettings({ showCompanion: v }));
+      const tvRow = el('div', 'flex-row'); tvRow.style.marginTop = '12px';
+      const tvBtn = el('button', 'btn outline', state.lang === 'en' ? '🔊 Test Voice' : '🔊 Проверить голос');
+      tvBtn.onclick = () => window.nexApi.testVoice();
+      tvRow.appendChild(tvBtn);
+      root.appendChild(tvRow);
     } else if (activeSettingsTab === 'memory') {
-      switchRow(root, tr('mem_auto'), '', state.memoryAutoSave, (v) => window.nexApi.updateSettings({ memoryAutoSave: v }));
-      if (!state.memories.length) root.appendChild(el('p', 'sub', tr('mem_empty')));
-      else {
-        state.memories.forEach((m, idx) => {
-          const r = el('div', 'row-item'); r.appendChild(el('span', '', m));
-          const del = el('button', 'btn outline', '×'); del.onclick = () => window.nexApi.removeMemory(idx);
-          r.appendChild(del); root.appendChild(r);
-        });
-      }
+      const isEn = state.lang === 'en';
+      switchRow(root, tr('mem_auto'), tr('mem_auto_desc'), state.memoryAutoSave, (v) => window.nexApi.updateSettings({ memoryAutoSave: v }));
+      const cats = [['all', isEn ? 'All' : 'Все'], ['personal', isEn ? 'Personal' : 'Личное'], ['work', isEn ? 'Work' : 'Работа'], ['prefs', isEn ? 'Preferences' : 'Предпочтения'], ['projects', isEn ? 'Projects' : 'Проекты']];
+      const cRow = el('div', 'tabs-row'); cRow.style.marginTop = '10px';
+      cats.forEach(([cid, clbl]) => { const b = el('button', 'pill-btn small' + (memCatFilter === cid ? ' active' : ''), clbl); b.onclick = () => { memCatFilter = cid; renderSettings(); }; cRow.appendChild(b); });
+      root.appendChild(cRow);
+      const catLabel = (cid) => (cats.find(x => x[0] === cid) || cats[1])[1];
+      (state.memories || []).forEach((item, idx) => {
+        const text = typeof item === 'string' ? item : item.text, cat = typeof item === 'string' ? 'personal' : (item.category || 'personal');
+        if (memCatFilter !== 'all' && cat !== memCatFilter) return;
+        const row = el('div', 'row-item'), left = el('div', ''); left.style.flex = '1';
+        left.appendChild(el('span', 'mem-cat-badge', catLabel(cat))); left.appendChild(document.createTextNode(text));
+        const bEdit = el('button', 'msg-act-btn', '✎'); bEdit.onclick = () => { const inp = el('input'); inp.type = 'text'; inp.value = text; const ok = el('button', 'btn outline', 'OK'); ok.onclick = () => window.nexApi.updateMemory({ index: idx, text: inp.value, category: cat }); row.innerHTML = ''; row.appendChild(inp); row.appendChild(ok); inp.focus(); };
+        const del = el('button', 'btn outline', '×'); del.onclick = () => window.nexApi.removeMemory(idx);
+        row.appendChild(left); row.appendChild(bEdit); row.appendChild(del); root.appendChild(row);
+      });
       const addR = el('div', 'flex-row'); addR.style.marginTop = '12px';
+      const cSel = document.createElement('select'); cSel.style.width = '140px'; cats.slice(1).forEach(([cid, clbl]) => { const o = document.createElement('option'); o.value = cid; o.textContent = clbl; cSel.appendChild(o); });
       const inp = el('input'); inp.type = 'text'; inp.placeholder = tr('add_mem');
-      const bAdd = el('button', 'btn', tr('add'));
-      bAdd.onclick = () => { if (inp.value.trim()) { window.nexApi.addMemory(inp.value); inp.value = ''; } };
-      const bClr = el('button', 'btn danger', tr('clear'));
-      bClr.onclick = () => window.nexApi.clearMemories();
-      addR.appendChild(inp); addR.appendChild(bAdd); addR.appendChild(bClr);
-      root.appendChild(addR);
+      const bAdd = el('button', 'btn', tr('add')); bAdd.onclick = () => { if (inp.value.trim()) { window.nexApi.addMemory({ text: inp.value, category: cSel.value }); inp.value = ''; } };
+      const bClr = el('button', 'btn danger', tr('clear')); bClr.onclick = () => window.nexApi.clearMemories();
+      addR.appendChild(cSel); addR.appendChild(inp); addR.appendChild(bAdd); addR.appendChild(bClr); root.appendChild(addR);
     } else if (activeSettingsTab === 'access') {
       root.appendChild(el('p', 'sub', tr('access_desc')));
       const p = state.permissions;
@@ -819,6 +909,13 @@
       switchRow(root, '🔒 ' + tr('confirm_buy'), tr('confirm_buy_d'), true, () => {}, true);
       switchRow(root, tr('confirm_act'), tr('confirm_act_d'), state.confirmSensitiveActions, (v) => window.nexApi.updateSettings({ confirmSensitiveActions: v }));
     } else if (activeSettingsTab === 'lang') {
+      const isEn = state.lang === 'en';
+      root.appendChild(el('label', 'field-label', isEn ? 'Appearance Theme' : 'Тема оформления'));
+      const thRow = el('div', 'tabs-row');
+      [['system', isEn ? 'System' : 'Системная'], ['light', isEn ? 'Warm Light' : 'Тёплая светлая'], ['dark', isEn ? 'AMOLED Dark' : 'AMOLED тёмная']].forEach(([tid, tlbl]) => {
+        const b = el('button', 'pill-btn small' + ((state.themeMode || 'system') === tid ? ' active' : ''), tlbl); b.onclick = () => window.nexApi.updateSettings({ themeMode: tid }); thRow.appendChild(b);
+      });
+      root.appendChild(thRow);
       root.appendChild(el('label', 'field-label', tr('lang_title')));
       const row = el('div', 'tabs-row');
       [['ru', 'Русский'], ['en', 'English']].forEach(([l, lbl]) => {
@@ -870,6 +967,7 @@
     const main = el('div', 'nc-main'), sess = nexCodeSnap.activeSession || { cwd: '', uiLog: [] };
     const bar = el('div', 'nc-toolbar');
     bar.appendChild(el('span', 'nc-cwd', `📁 ${sess.cwd || ''}`));
+    if (nexCodeSnap.hasNexMd) bar.appendChild(el('span', 'dev-badge online', 'NEX.md ✓'));
     const bDir = el('button', 'pill-btn small', isEn ? 'Folder' : 'Папка'); bDir.onclick = async () => { nexCodeSnap = await window.nexApi.nexCodePickFolder(); renderNexCode(); };
     const bAuto = el('button', 'pill-btn small' + (nexCodeSnap.autoApprove ? ' active' : ''), (isEn ? 'Auto: ' : 'Авто: ') + (nexCodeSnap.autoApprove ? 'ON' : 'OFF'));
     bAuto.onclick = async () => { nexCodeSnap = await window.nexApi.nexCodeToggleAuto(!nexCodeSnap.autoApprove); renderNexCode(); };
@@ -907,6 +1005,8 @@
           head.appendChild(el('span', '', `${item.status === 'running' ? '⏳' : (item.status === 'error' ? '✕' : '✓')} ${item.tool}`));
           head.appendChild(el('small', '', item.status || '')); card.appendChild(head);
           const argsStr = JSON.stringify(item.args || {}); if (argsStr !== '{}') card.appendChild(el('div', 'nc-tool-args', argsStr.slice(0, 260)));
+          if (item.diffText) { const dBox = el('div', 'diff-box'); for (const dl of String(item.diffText).split('\n')) { const cls = dl.startsWith('+ ') ? 'add' : (dl.startsWith('- ') ? 'del' : 'ctx'); dBox.appendChild(el('div', `diff-line ${cls}`, dl)); } card.appendChild(dBox); }
+          if (item.checkpointId) { const cp = (sess.checkpoints || []).find(c => c.id === item.checkpointId); const bRb = el('button', 'msg-act-btn', cp?.rolledBack ? (isEn ? 'Rolled back ✓' : 'Откачено ✓') : (isEn ? '↩ Rollback edit' : '↩ Откатить правку')); bRb.disabled = Boolean(cp?.rolledBack); bRb.style.marginTop = '6px'; bRb.onclick = async () => { await window.nexApi.nexCodeRollback(item.checkpointId); }; card.appendChild(bRb); }
           if (item.output) card.appendChild(el('pre', 'nc-tool-out', item.output.slice(0, 1600)));
           logBox.appendChild(card);
         }
@@ -929,6 +1029,62 @@
     layout.appendChild(main); root.appendChild(layout);
   }
 
+  function renderDevices() {
+    const root = document.getElementById('viewDevices'); root.innerHTML = ''; const isEn = state.lang === 'en';
+    root.appendChild(el('h2', '', tr('devices')));
+    root.appendChild(el('p', 'sub', isEn ? 'Manage all 5 Nex ecosystem categories: HUBs, AI Clip, Smart Watch, AR Glasses, and Nex Core PC.' : 'Управление всеми 5 категориями экосистемы Nex: HUBы, Клипса, Часы, Очки и ПК (Nex Core).'));
+    if (!devicesSnap) { window.nexApi.devicesGet().then(snap => { devicesSnap = snap; if (activeView === 'devices') renderDevices(); }); root.appendChild(el('p', 'sub', '…')); return; }
+    const tabs = el('div', 'tabs-row');
+    [['all', isEn ? 'All (5)' : 'Все (5)'], ['hubs', isEn ? 'HUBs' : 'HUBы'], ['clip', isEn ? 'AI Clip' : 'Клипса'], ['watch', isEn ? 'Watch' : 'Часы'], ['glasses', isEn ? 'AR Glasses' : 'Очки'], ['pc', isEn ? 'PC (Nex Core)' : 'ПК (Nex Core)']].forEach(([cid, clbl]) => {
+      const b = el('button', 'pill-btn small' + (devicesCat === cid ? ' active' : ''), clbl); b.onclick = () => { devicesCat = cid; renderDevices(); }; tabs.appendChild(b);
+    });
+    root.appendChild(tabs);
+    const eco = devicesSnap.ecosystem || { hubs: [], clip: {}, watch: {}, glasses: {} };
+    const saveEco = async (nextEco) => { const r = await window.nexApi.devicesSaveEcosystem(nextEco); if (r && r.ecosystem) devicesSnap.ecosystem = r.ecosystem; renderDevices(); };
+    const show = (cat) => devicesCat === 'all' || devicesCat === cat;
+    if (show('hubs')) {
+      const sec = el('div', 'card-box'); sec.appendChild(el('h3', '', isEn ? 'HUBs (Nex Hub / Nex Hub Ultra)' : 'HUBы (Nex Hub / Nex Hub Ultra)'));
+      const wiz = el('div', 'card-box'); wiz.appendChild(el('strong', '', isEn ? 'Connect New Hub (Bluetooth → Wi-Fi → Account)' : 'Подключить новый HUB (Bluetooth → Wi-Fi → Аккаунт)'));
+      const wRow = el('div', 'flex-row'); wRow.style.marginTop = '8px';
+      const wSel = document.createElement('select'); ['Nex Hub Ultra', 'Nex Hub'].forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; wSel.appendChild(o); });
+      const wName = el('input'); wName.type = 'text'; wName.placeholder = isEn ? 'Room / Name' : 'Комната';
+      const wWifi = el('input'); wWifi.type = 'text'; wWifi.placeholder = 'Wi-Fi SSID';
+      const wBtn = el('button', 'btn', isEn ? 'Pair via BT' : 'Привязать'); wBtn.onclick = async () => { const r = await window.nexApi.devicesHubSetup({ model: wSel.value, name: wName.value || wSel.value, wifiSsid: wWifi.value }); if (r && r.ecosystem) { devicesSnap.ecosystem = r.ecosystem; renderDevices(); } };
+      wRow.appendChild(wSel); wRow.appendChild(wName); wRow.appendChild(wWifi); wRow.appendChild(wBtn); wiz.appendChild(wRow); sec.appendChild(wiz);
+      const grid = el('div', 'dev-grid');
+      (eco.hubs || []).forEach((hub, hIdx) => {
+        const card = el('div', 'dev-card'), head = el('div', 'dev-card-head');
+        head.appendChild(el('strong', '', `🔊 ${hub.name}`)); head.appendChild(el('span', 'dev-badge' + (hub.connected ? ' online' : ''), hub.connected ? `Wi-Fi · ${hub.wifiSsid || 'Online'}` : (isEn ? 'Standby' : 'Ожидает')));
+        card.appendChild(head); card.appendChild(el('small', '', `${hub.model} · ${hub.activity || ''}`));
+        const chRow = el('div', 'tabs-row'); [['m', isEn ? 'Nex' : 'Некс'], ['f', isEn ? 'Nexi' : 'Некси']].forEach(([v, lbl]) => { const b = el('button', 'pill-btn small' + (hub.character === v ? ' active' : ''), lbl); b.onclick = () => { eco.hubs[hIdx].character = v; saveEco(eco); }; chRow.appendChild(b); }); card.appendChild(chRow);
+        const brRow = el('div', 'dev-slider-row'); brRow.appendChild(el('span', '', isEn ? `Screen: ${hub.brightness}%` : `Яркость: ${hub.brightness}%`)); const br = el('input'); br.type = 'range'; br.min = 0; br.max = 100; br.value = hub.brightness; br.onchange = () => { eco.hubs[hIdx].brightness = Number(br.value); saveEco(eco); }; brRow.appendChild(br); card.appendChild(brRow);
+        const vlRow = el('div', 'dev-slider-row'); vlRow.appendChild(el('span', '', isEn ? `Volume: ${hub.volume}%` : `Громкость: ${hub.volume}%`)); const vl = el('input'); vl.type = 'range'; vl.min = 0; vl.max = 100; vl.value = hub.volume; vl.onchange = () => { eco.hubs[hIdx].volume = Number(vl.value); saveEco(eco); }; vlRow.appendChild(vl); card.appendChild(vlRow);
+        switchRow(card, isEn ? 'Camera tracking' : 'Слежение камеры', '', Boolean(hub.cameraTracking), (v) => { eco.hubs[hIdx].cameraTracking = v; saveEco(eco); });
+        switchRow(card, isEn ? 'Night / DND mode' : 'Ночной режим / Не беспокоить', '', Boolean(hub.nightDnd), (v) => { eco.hubs[hIdx].nightDnd = v; saveEco(eco); });
+        const auRow = el('div', 'flex-row'), auSel = document.createElement('select'); ['Яндекс Музыка', 'Spotify', 'YouTube Music', 'Локальное аудио'].forEach(srv => { const o = document.createElement('option'); o.value = srv; o.textContent = srv; if (hub.audioService === srv) o.selected = true; auSel.appendChild(o); }); auSel.onchange = () => { eco.hubs[hIdx].audioService = auSel.value; saveEco(eco); };
+        const kBtn = el('button', 'btn outline', isEn ? 'Sync AI Keys' : 'Ключи ИИ'); kBtn.onclick = async () => { const r = await window.nexApi.devicesSyncHubKeys(hub.id); if (r && r.ecosystem) { devicesSnap.ecosystem = r.ecosystem; renderDevices(); } };
+        auRow.appendChild(auSel); auRow.appendChild(kBtn); card.appendChild(auRow);
+        const icRow = el('div', 'flex-row'), icInp = el('input'); icInp.type = 'text'; icInp.placeholder = isEn ? 'Intercom…' : 'Сказать на колонку…'; const icBtn = el('button', 'btn outline', '📢'); icBtn.onclick = async () => { if (!icInp.value.trim()) return; const r = await window.nexApi.devicesHubIntercom({ hubId: hub.id, message: icInp.value }); if (r && r.ecosystem) { devicesSnap.ecosystem = r.ecosystem; renderDevices(); } }; icRow.appendChild(icInp); icRow.appendChild(icBtn); card.appendChild(icRow);
+        grid.appendChild(card);
+      });
+      sec.appendChild(grid); root.appendChild(sec);
+    }
+    if (show('clip') || show('watch') || show('glasses')) {
+      const grid = el('div', 'dev-grid');
+      if (show('clip')) { const clip = eco.clip || {}, c = el('div', 'dev-card'), h = el('div', 'dev-card-head'); h.appendChild(el('strong', '', `🎙 ${clip.name || 'Nex AI Clip'}`)); h.appendChild(el('span', 'dev-badge' + (clip.connected ? ' online' : ''), clip.connected ? `BT · ${clip.battery}%` : 'Bluetooth')); c.appendChild(h); c.appendChild(el('small', '', isEn ? `Battery ${clip.battery}% · Memory ${clip.freeStoragePct}%` : `Заряд ${clip.battery}% · Память ${clip.freeStoragePct}%`)); switchRow(c, isEn ? 'Connected (Bluetooth)' : 'Подключена (Bluetooth)', '', Boolean(clip.connected), (v) => { eco.clip.connected = v; saveEco(eco); }); switchRow(c, isEn ? 'Continuous meeting notes' : 'Постоянный конспект', '', Boolean(clip.continuousNotes), (v) => { eco.clip.continuousNotes = v; saveEco(eco); }); switchRow(c, isEn ? 'Privacy mute' : 'Приватность (выкл. мик/камера)', '', Boolean(clip.privacyMute), (v) => { eco.clip.privacyMute = v; saveEco(eco); }); grid.appendChild(c); }
+      if (show('watch')) { const w = eco.watch || {}, c = el('div', 'dev-card'), h = el('div', 'dev-card-head'); h.appendChild(el('strong', '', `⌚ ${w.name || 'Nex Watch'}`)); h.appendChild(el('span', 'dev-badge' + (w.connected ? ' online' : ''), w.connected ? `BT · ${w.battery}%` : 'Bluetooth')); c.appendChild(h); c.appendChild(el('small', '', isEn ? `Battery ${w.battery}% · Pulse ${w.lastPulse} · Sleep ${w.lastSleepHours}h` : `Заряд ${w.battery}% · Пульс ${w.lastPulse} · Сон ${w.lastSleepHours} ч`)); switchRow(c, isEn ? 'Connected (Bluetooth)' : 'Подключены (Bluetooth)', '', Boolean(w.connected), (v) => { eco.watch.connected = v; saveEco(eco); }); switchRow(c, isEn ? 'Quick voice commands' : 'Быстрые голосовые команды', '', Boolean(w.quickVoice), (v) => { eco.watch.quickVoice = v; saveEco(eco); }); switchRow(c, isEn ? 'Silent hints' : 'Тихие подсказки', '', Boolean(w.silentHints), (v) => { eco.watch.silentHints = v; saveEco(eco); }); switchRow(c, isEn ? 'Health context' : 'Контекст здоровья', '', Boolean(w.shareHealthContext), (v) => { eco.watch.shareHealthContext = v; saveEco(eco); }); switchRow(c, isEn ? 'Hub & music remote' : 'Пульт для хаба и музыки', '', Boolean(w.hubMediaRemote), (v) => { eco.watch.hubMediaRemote = v; saveEco(eco); }); grid.appendChild(c); }
+      if (show('glasses')) { const g = eco.glasses || {}, c = el('div', 'dev-card'), h = el('div', 'dev-card-head'); h.appendChild(el('strong', '', `👓 ${g.name || 'Nex AR Glasses'}`)); h.appendChild(el('span', 'dev-badge' + (g.connected ? ' online' : ''), g.connected ? `Connected · ${g.battery}%` : 'Bluetooth / Wi-Fi')); c.appendChild(h); const hb = el('div', 'dev-slider-row'); hb.appendChild(el('span', '', isEn ? `HUD: ${g.hudBrightness}%` : `Яркость HUD: ${g.hudBrightness}%`)); const sl = el('input'); sl.type = 'range'; sl.min = 10; sl.max = 100; sl.value = g.hudBrightness || 60; sl.onchange = () => { eco.glasses.hudBrightness = Number(sl.value); saveEco(eco); }; hb.appendChild(sl); c.appendChild(hb); switchRow(c, isEn ? 'Connected' : 'Подключены', '', Boolean(g.connected), (v) => { eco.glasses.connected = v; saveEco(eco); }); switchRow(c, isEn ? 'Live subtitles & translation' : 'Субтитры и синхронный перевод', '', Boolean(g.liveSubtitles), (v) => { eco.glasses.liveSubtitles = v; saveEco(eco); }); switchRow(c, isEn ? 'HUD cards & navigation' : 'Подсказки и навигация', '', Boolean(g.navHints), (v) => { eco.glasses.navHints = v; saveEco(eco); }); const bVis = el('button', 'btn outline', isEn ? '👁 Ask "What do I see?"' : '👁 Спросить «Что я вижу?»'); bVis.onclick = () => { showView('chat'); const inp = document.getElementById('chatInput'); inp.value = isEn ? 'Look at my screen and describe what you see' : 'Посмотри на экран и опиши, что ты видишь'; inp.focus(); }; c.appendChild(bVis); grid.appendChild(c); }
+      root.appendChild(grid);
+    }
+    if (show('pc')) {
+      const me = devicesSnap.thisDevice || {}, tel = me.telemetry || {}, meCard = el('div', 'card-box'); meCard.style.marginTop = '12px';
+      meCard.appendChild(el('h3', '', `💻 ${me.name || 'Nex Core (Fedora)'}`)); meCard.appendChild(el('p', 'sub', `${me.platform || 'Fedora / Linux'} · IP: ${me.primaryIp || '127.0.0.1'}:${me.port || 47800}`));
+      const sg = el('div', 'stats-grid'); [[`${tel.cpuLoadPct ?? 0}%`, `CPU (${tel.cpuCores || 1} cores)`], [`${tel.ramUsedPct ?? 0}%`, `RAM (${tel.ramTotalGb || 0} GB)`], [tel.diskUsedPct !== null && tel.diskUsedPct !== undefined ? `${tel.diskUsedPct}%` : '—', isEn ? 'Disk /' : 'Диск /']].forEach(([v, l]) => { const t = el('div', 'stat-tile'); t.appendChild(el('div', 'st-val', v)); t.appendChild(el('div', 'st-lbl', l)); sg.appendChild(t); }); meCard.appendChild(sg);
+      const nameRow = el('div', 'flex-row'); nameRow.style.marginBottom = '10px'; const nInp = el('input'); nInp.type = 'text'; nInp.value = me.name || ''; const nBtn = el('button', 'btn outline', 'OK'); nBtn.onclick = async () => { await window.nexApi.devicesUpdate({ deviceName: nInp.value }); devicesSnap = null; renderDevices(); }; nameRow.appendChild(nInp); nameRow.appendChild(nBtn); meCard.appendChild(nameRow);
+      switchRow(meCard, isEn ? 'Allow Android LAN Bridge (47800)' : 'Разрешить управление с Android (47800)', '', me.lanEnabled !== false, async (v) => { await window.nexApi.devicesUpdate({ lanBridgeEnabled: v }); devicesSnap = null; renderDevices(); });
+      const tokBox = el('div', 'card-box'); tokBox.style.marginTop = '10px'; tokBox.appendChild(el('strong', '', isEn ? 'Phone Pairing & Clipboard Sync' : 'Сопряжение и буфер обмена')); tokBox.appendChild(el('p', 'sub', `IP: ${me.primaryIp} · Port: ${me.port} · Code: ${me.pairingToken}`)); if (devicesSnap.clipboardPreview) tokBox.appendChild(el('small', '', `${isEn ? 'Clipboard:' : 'Буфер:'} ${devicesSnap.clipboardPreview}`)); const regBtn = el('button', 'btn outline', isEn ? 'Generate New Code' : 'Обновить код'); regBtn.onclick = async () => { await window.nexApi.devicesRegenToken(); devicesSnap = null; renderDevices(); }; tokBox.appendChild(regBtn); meCard.appendChild(tokBox); root.appendChild(meCard);
+    }
+  }
   function renderAccount() {
     const root = document.getElementById('viewAccount');
     root.innerHTML = '';
@@ -1332,11 +1488,13 @@
     renderTopBar();
     if (activeView === 'chat') renderChat();
     else if (activeView === 'nexcode') renderNexCode();
+    else if (activeView === 'devices') renderDevices();
     else if (activeView === 'projects') renderProjects();
     else if (activeView === 'artifacts') renderArtifactsLib();
     else if (activeView === 'artifactDetail') renderArtifactDetail();
     else if (activeView === 'studio') renderStudio();
     else if (activeView === 'nexcode') renderNexCode();
+    else if (activeView === 'devices') renderDevices();
     else if (activeView === 'settings') renderSettings();
     else if (activeView === 'account') renderAccount();
   }
@@ -1370,7 +1528,14 @@
     }
   }
 
-  document.getElementById('btnToggleSb').onclick = () => document.getElementById('sidebar').classList.toggle('collapsed');
+  document.getElementById('btnToggleSb').onclick = () => { const next = !Boolean(state?.sidebarCollapsed); document.getElementById('shell').classList.toggle('sb-collapsed', next); window.nexApi.updateSettings({ sidebarCollapsed: next }); };
+  document.getElementById('chatSearchInput').addEventListener('input', (e) => { chatSearchQuery = e.target.value || ''; renderSidebar(); });
+  document.getElementById('btnScreenVision').onclick = async () => { const res = await window.nexApi.captureScreen(); if (res && res.ok) { pendingAttachments.push({ name: res.name, mimeType: res.mimeType, isImage: true, base64: res.base64 }); renderChips(); const inp = document.getElementById('chatInput'); if (!inp.value.trim()) inp.value = state.lang === 'en' ? 'Look at my screen and help me with this' : 'Посмотри на мой экран и помоги разобраться'; inp.focus(); } };
+  function openVoiceMode() { voiceModeActive = true; document.getElementById('voiceModeOverlay').hidden = false; document.getElementById('vmTitle').textContent = state.lang === 'en' ? `Live Voice · ${agentName()}` : `Живой голос · ${agentName()}`; document.getElementById('vmStatus').textContent = state.lang === 'en' ? 'Listening…' : 'Слушает…'; if (!vmSphereCtrl && window.NexSphereRenderer) vmSphereCtrl = window.NexSphereRenderer.attach(document.getElementById('vmSphere')); if (vmSphereCtrl) vmSphereCtrl.update('listening', state.voice === 'f'); if (window.NexVoice && !window.NexVoice.isListening()) window.NexVoice.toggleManualListen(); }
+  function closeVoiceMode() { voiceModeActive = false; document.getElementById('voiceModeOverlay').hidden = true; window.nexApi.stopSpeech(); if (window.NexVoice && window.NexVoice.isListening()) window.NexVoice.toggleManualListen(); }
+  document.getElementById('btnVoiceMode').onclick = openVoiceMode; document.getElementById('btnVmClose').onclick = closeVoiceMode; document.getElementById('btnVmExit').onclick = closeVoiceMode;
+  document.getElementById('btnVmBarge').onclick = () => { window.nexApi.stopSpeech(); document.getElementById('vmStatus').textContent = state.lang === 'en' ? 'Listening…' : 'Слушает…'; if (window.NexVoice && !window.NexVoice.isListening()) window.NexVoice.toggleManualListen(); };
+  window.__nexOnSpeechFinished = () => { if (voiceModeActive && window.NexVoice && !window.NexVoice.isListening()) setTimeout(() => { if (voiceModeActive && !isBusy && window.NexVoice && !window.NexVoice.isListening()) window.NexVoice.toggleManualListen(); }, 350); };
   document.getElementById('btnToggleComp').onclick = () => window.nexApi.toggleCompanion();
   document.getElementById('btnNewChat').onclick = async () => { await window.nexApi.newChat(null); showView('chat'); };
   document.getElementById('btnProjects').onclick = () => showView('projects');
@@ -1379,6 +1544,7 @@
   document.getElementById('btnSettings').onclick = () => showView('settings');
   document.getElementById('btnAccount').onclick = () => { storageStats = null; showView('account'); };
   document.getElementById('btnNexCode').onclick = () => showView('nexcode');
+  document.getElementById('btnDevices').onclick = () => { devicesSnap = null; showView('devices'); };
   document.getElementById('btnModelPill').onclick = openModelModal;
   document.getElementById('modelModal').onclick = (e) => { if (e.target.id === 'modelModal') document.getElementById('modelModal').hidden = true; };
   document.getElementById('btnPlus').onclick = (e) => { e.stopPropagation(); const m = document.getElementById('plusMenu'); renderPlusMenu(); m.hidden = !m.hidden; };
@@ -1418,6 +1584,7 @@
     sphereData = data;
     if (activeView === 'chat') {
       mainSphere.update(data.state, data.female);
+      if (voiceModeActive) { if (vmSphereCtrl) vmSphereCtrl.update(data.state, Boolean(data.female)); const vmSt = document.getElementById('vmStatus'), vmTr = document.getElementById('vmTranscript'); if (vmSt && data.label) vmSt.textContent = data.label; if (vmTr && typeof data.transcript === 'string') vmTr.textContent = data.transcript; }
       document.getElementById('statusText').textContent = data.label || tr('ready');
       const lt = document.getElementById('liveTranscript');
       if (data.transcript) {
@@ -1441,6 +1608,7 @@
     confirmation = pending;
     if (activeView === 'chat') renderChat();
     else if (activeView === 'nexcode') renderNexCode();
+    else if (activeView === 'devices') renderDevices();
   });
 
   window.nexApi.onSpeakingState((speaking) => {

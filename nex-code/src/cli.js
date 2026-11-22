@@ -63,7 +63,18 @@ async function main() {
     const line = (await askLine('\x1b[36mnex-code>\x1b[0m ')).trim();
     if (!line) continue;
     if (line === '/exit' || line === '/quit') { sessionStore.save(session); syncDesktopCompanion('idle', ''); rl.close(); return; }
-    if (line === '/help') { console.log('/sessions | /new | /resume <id|num> | /cd <dir> | /auto | /keys | /refresh | /profile <atom|quark|sel> | /model <Provider> <id> | /effort <low|medium|high|max> | /clear | /exit'); continue; }
+    if (line === '/help') { console.log('/sessions | /new | /resume <id|num> | /cd <dir> | /auto | /rollback | /keys | /refresh | /profile <atom|quark|sel> | /model <Provider> <id> | /effort <low|medium|high|max> | /clear | /exit'); continue; }
+    if (line === '/rollback') {
+      const last = (session.checkpoints || []).pop();
+      if (!last) { console.log('No checkpoints to rollback.'); continue; }
+      try {
+        const target = path.resolve(cwd, last.relPath);
+        if (last.existed) { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, last.content || '', 'utf8'); }
+        else if (fs.existsSync(target)) fs.unlinkSync(target);
+        sessionStore.save(session); console.log(`\x1b[32m↩ Rolled back ${last.relPath}\x1b[0m`);
+      } catch (e) { console.log(`Rollback failed: ${e.message}`); }
+      continue;
+    }
     if (line === '/sessions') { sessionStore.list().slice(0, 20).forEach((s, i) => console.log(`${s.id === session.id ? '*' : ' '} [${i + 1}] ${s.id} (${s.messageCount}) ${s.title} [${s.cwd}]`)); continue; }
     if (line === '/new') { sessionStore.save(session); session = session.messages.length === 0 ? session : (sessionStore.findFreshEmpty(cwd) || sessionStore.create(cwd)); console.log(`\x1b[32mSession: ${session.id}\x1b[0m`); continue; }
     if (line.startsWith('/resume')) { const arg = line.split(/\s+/)[1], list = sessionStore.list(), hit = /^\d+$/.test(arg || '') ? list[Number(arg) - 1] : list.find(s => s.id === arg); if (!hit) { console.log('Not found.'); continue; } const loaded = sessionStore.load(hit.id); if (loaded) { session = loaded; if (loaded.cwd && fs.existsSync(loaded.cwd)) cwd = loaded.cwd; console.log(`\x1b[32mResumed ${session.id}\x1b[0m`); } continue; }
@@ -87,7 +98,8 @@ async function main() {
     if (!target) { console.log('\x1b[33mNo API key configured. Run /keys.\x1b[0m'); continue; }
     if (!session.messages.length) session.title = line.slice(0, 48);
     session.messages.push({ role: 'user', text: line }); session.uiLog.push({ kind: 'user', text: line, ts: Date.now() });
-    const sysPrompt = `You are Nex Code, an autonomous agentic shell inside ${cwd} on ${process.platform}. Use files, git, shell, web_search, and web_fetch tools freely. NEVER complete purchases without request_purchase_confirmation.`;
+    let nexMd = ''; try { const mp = path.join(cwd, 'NEX.md'); if (fs.existsSync(mp)) nexMd = fs.readFileSync(mp, 'utf8').slice(0, 14000); } catch (_) {}
+    const sysPrompt = `You are Nex Code, an autonomous agentic shell inside ${cwd} on ${process.platform}. Use files, git, shell, web_search, and web_fetch tools freely. NEVER complete purchases without request_purchase_confirmation.` + (nexMd ? `\n\nRepository rules (NEX.md):\n${nexMd}` : '');
     let activeProv = target.provider, activeMod = target.model;
     try {
       for (let step = 0; step < 22; step++) {
@@ -113,8 +125,20 @@ async function main() {
             else if (tc.name === 'git_diff') out = await tools.runShell(cwd, `git diff${a.path ? ` -- "${String(a.path).replace(/"/g, '\\"')}"` : ''}`, 15000);
             else if (tc.name === 'web_search') out = await tools.webSearch(a.query);
             else if (tc.name === 'web_fetch') out = await tools.webFetch(a.url);
-            else if (tc.name === 'edit_file') out = (await confirm(`Edit ${a.path}?`, false)) ? tools.editFile(cwd, a.path, a.old_text, a.new_text, a.replace_all) : 'Declined.';
-            else if (tc.name === 'write_file') out = (await confirm(`Write ${a.path}?`, false)) ? tools.writeFile(cwd, a.path, a.content) : 'Declined.';
+            else if (tc.name === 'edit_file') {
+              if (await confirm(`Edit ${a.path}?`, false)) {
+                const full = path.resolve(cwd, a.path); const existed = fs.existsSync(full); const before = existed ? fs.readFileSync(full, 'utf8') : '';
+                out = tools.editFile(cwd, a.path, a.old_text, a.new_text, a.replace_all);
+                session.checkpoints = session.checkpoints || []; session.checkpoints.push({ relPath: a.path, existed, content: before, ts: Date.now() });
+              } else out = 'Declined.';
+            }
+            else if (tc.name === 'write_file') {
+              if (await confirm(`Write ${a.path}?`, false)) {
+                const full = path.resolve(cwd, a.path); const existed = fs.existsSync(full); const before = existed ? fs.readFileSync(full, 'utf8') : '';
+                out = tools.writeFile(cwd, a.path, a.content);
+                session.checkpoints = session.checkpoints || []; session.checkpoints.push({ relPath: a.path, existed, content: before, ts: Date.now() });
+              } else out = 'Declined.';
+            }
             else if (tc.name === 'delete_file') out = (await confirm(`Delete ${a.path}?`, false)) ? tools.deleteFile(cwd, a.path) : 'Declined.';
             else if (tc.name === 'run_command') { const buy = tools.looksLikePurchase(a.command); out = (await confirm(buy ? `PAYMENT command: ${a.command}` : `Run: ${a.command}`, buy)) ? await tools.runShell(cwd, a.command, a.timeout_ms) : 'Declined.'; }
             else if (tc.name === 'request_purchase_confirmation') out = (await confirm(`CONFIRM PURCHASE: ${a.item_summary} (${a.amount})?`, true)) ? 'CONFIRMED' : 'CANCELLED';

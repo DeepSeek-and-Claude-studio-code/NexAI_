@@ -51,6 +51,14 @@ class NexController(private val ctx: Context) {
     var autoFailover by mutableStateOf(store.autoFailover)
     var storageConfig by mutableStateOf(store.loadStorageConfig())
     var storageStats by mutableStateOf(StorageStats())
+    var pairedPcHost by mutableStateOf(store.pairedPcHost)
+    var pairedPcPort by mutableStateOf(store.pairedPcPort)
+    var pairedPcToken by mutableStateOf(store.pairedPcToken)
+    var pairedPcStatus by mutableStateOf("")
+    var pairedPcTelemetry by mutableStateOf("")
+    var themeMode by mutableStateOf(store.themeMode)
+    var ecosystemDevices by mutableStateOf(store.loadEcosystemDevices())
+    var voiceModeActive by mutableStateOf(false)
     var userName by mutableStateOf(store.userName)
 
     var selectedProfileId by mutableStateOf(store.selectedProfileId)
@@ -995,11 +1003,16 @@ class NexController(private val ctx: Context) {
         isSpeaking = true
         sphereState = NexState.SPEAKING
         statusLabel = t("speaking")
-        val started = voiceManager.speak(text, lang, voice, speechRate) {
+        val started = voiceManager.speak(text, lang, voice, speechRate, apiKeys) {
             isSpeaking = false
-            if (!isBusy && !isListening) {
-                sphereState = NexState.IDLE
-                statusLabel = t("ready")
+            if (voiceModeActive && !isBusy && !isListening) {
+                scope.launch {
+                    delay(350)
+                    if (voiceModeActive && !isBusy && !isListening) startVoiceInput(fromAssistOverlay = false)
+                }
+            } else {
+                if (!isBusy && !isListening) { sphereState = NexState.IDLE; statusLabel = t("ready") }
+                if (wakeWordEnabled) NexWakeWordService.resume(ctx)
             }
         }
         if (!started) {
@@ -1120,7 +1133,7 @@ class NexController(private val ctx: Context) {
                     lang = lang,
                     female = female,
                     userName = userName,
-                    memories = memories.toList(),
+                    memories = buildList { addAll(memories); activeProject()?.instructions?.takeIf { it.isNotBlank() }?.let { add("[Project Rules] $it") } },
                     useMemory = memoryEnabled,
                     webSearchEnabled = webSearchEnabled,
                     projectFolderUri = activeProject()?.folderUri,
@@ -1216,6 +1229,7 @@ class NexController(private val ctx: Context) {
         if (fromAssistOverlay) assistTranscript = ""
         voiceManager.startListening(
             lang = lang,
+            apiKeys = apiKeys,
             onPartial = { partial ->
                 // Keep status as "Слушает…" and show spoken words below
                 statusLabel = t("listening")
@@ -1235,6 +1249,158 @@ class NexController(private val ctx: Context) {
                 if (fromAssistOverlay) assistReply = err
             }
         )
+    }
+
+    fun updateThemeMode(mode: String) { themeMode = mode; store.themeMode = mode }
+    fun updateEcosystemDevices(next: EcosystemDevicesState) { ecosystemDevices = next; store.saveEcosystemDevices(next) }
+    fun updateProjectInstructions(projectId: String, instructions: String) {
+        val idx = projects.indexOfFirst { it.id == projectId }
+        if (idx >= 0) {
+            projects[idx] = projects[idx].copy(instructions = instructions)
+            persist()
+        }
+    }
+    fun addCategorizedMemory(category: String, fact: String) {
+        val clean = fact.trim()
+        if (clean.isEmpty()) return
+        val tagged = if (clean.startsWith("[")) clean else "[$category] $clean"
+        addMemory(tagged)
+    }
+    fun openVoiceMode() { voiceModeActive = true; if (!isListening && !isBusy) startVoiceInput(fromAssistOverlay = false) }
+    fun closeVoiceMode() { voiceModeActive = false; voiceManager.stopSpeaking(); isSpeaking = false; stopVoiceInput() }
+    fun bargeInAndListen() { voiceManager.stopSpeaking(); isSpeaking = false; startVoiceInput(fromAssistOverlay = false) }
+    fun editMessage(messageId: String, newText: String) {
+        val clean = newText.trim()
+        if (clean.isEmpty() || isBusy) return
+        val chat = activeChat() ?: return
+        val cIdx = chats.indexOfFirst { it.id == chat.id }
+        val mIdx = chat.messages.indexOfFirst { it.id == messageId && it.role == "user" }
+        if (cIdx < 0 || mIdx < 0) return
+        chats[cIdx] = chat.copy(messages = chat.messages.take(mIdx), updatedAt = System.currentTimeMillis())
+        persist(); sendUserMessage(clean, fromAssistOverlay = false, fromVoice = false)
+    }
+    fun regenerateLast() {
+        if (isBusy) return
+        val chat = activeChat() ?: return
+        val cIdx = chats.indexOfFirst { it.id == chat.id }
+        val lastUserIdx = chat.messages.indexOfLast { it.role == "user" }
+        if (cIdx < 0 || lastUserIdx < 0) return
+        val lastUserText = chat.messages[lastUserIdx].text.trim()
+        if (lastUserText.isEmpty()) return
+        chats[cIdx] = chat.copy(messages = chat.messages.take(lastUserIdx), updatedAt = System.currentTimeMillis())
+        persist(); sendUserMessage(lastUserText, fromAssistOverlay = false, fromVoice = false)
+    }
+    fun askWithScreenVision(customPrompt: String = "") {
+        val screenTxt = NexAccessibilityService.instance?.readCurrentScreenText()?.take(3500).orEmpty()
+        val base = customPrompt.trim().ifEmpty { if (lang == "en") "Look at my screen and help me." else "Посмотри на мой экран и помоги разобраться." }
+        val full = if (screenTxt.isNotBlank()) "$base\n\n[Screen Vision UI]:\n$screenTxt" else "$base\n\n[Accessibility Screen Control is off — ask user to enable it in Settings -> Access.]"
+        sendUserMessage(full, fromAssistOverlay = false, fromVoice = false)
+    }
+    fun syncClipboardToPc(text: String, onDone: (String) -> Unit) {
+        scope.launch {
+            val host = pairedPcHost.trim(); val token = pairedPcToken.trim()
+            if (host.isBlank() || token.isBlank()) { onDone(if (lang == "en") "Connect PC first" else "Сначала подключи ПК"); return@launch }
+            val msg = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val res = LlmClient.postRaw("http://$host:$pairedPcPort/device/clipboard", mapOf("X-Nex-Token" to token), org.json.JSONObject().put("text", text).toString(), 8000)
+                    if (!res.ok) error("HTTP ${res.code}")
+                    if (lang == "en") "✓ Sent clipboard to PC" else "✓ Буфер отправлен на ПК"
+                }.getOrElse { "Error: ${it.message}" }
+            }
+            onDone(msg)
+        }
+    }
+    fun pullClipboardFromPc(onDone: (String, String?) -> Unit) {
+        scope.launch {
+            val host = pairedPcHost.trim(); val token = pairedPcToken.trim()
+            if (host.isBlank() || token.isBlank()) { onDone(if (lang == "en") "Connect PC first" else "Сначала подключи ПК", null); return@launch }
+            val pair = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val res = LlmClient.getRaw("http://$host:$pairedPcPort/device/clipboard", mapOf("X-Nex-Token" to token), 8000)
+                    if (!res.ok) error("HTTP ${res.code}")
+                    (if (lang == "en") "✓ Copied from PC" else "✓ Получено с ПК") to org.json.JSONObject(res.body).optString("text", "")
+                }.getOrElse { "Error: ${it.message}" to null }
+            }
+            onDone(pair.first, pair.second)
+        }
+    }
+
+    fun testVoice() {
+        val sample = if (lang == "en") {
+            "Hi! I am $agentName. Voice output is working properly."
+        } else {
+            "Привет! Я $agentName. Голос работает отлично."
+        }
+        speakReply(sample)
+    }
+
+    fun savePairedPc(host: String, port: Int, token: String) {
+        pairedPcHost = host
+        pairedPcPort = port
+        pairedPcToken = token
+        store.pairedPcHost = host
+        store.pairedPcPort = port
+        store.pairedPcToken = token
+    }
+
+    fun pingPairedPc(onDone: (String) -> Unit) {
+        scope.launch {
+            val host = pairedPcHost.trim()
+            val port = pairedPcPort
+            val token = pairedPcToken.trim()
+            if (host.isBlank() || token.isBlank()) {
+                onDone(if (lang == "en") "Enter PC IP and Pairing Code" else "Введи IP ПК и Код сопряжения")
+                return@launch
+            }
+            val msg = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val url = "http://$host:$port/device/info"
+                    val res = LlmClient.getRaw(
+                        url,
+                        mapOf(
+                            "X-Nex-Token" to token,
+                            "X-Nex-Device-Id" to store.deviceId,
+                            "X-Nex-Device-Name" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
+                        ),
+                        readTimeoutMs = 8000
+                    )
+                    if (!res.ok) error("HTTP ${res.code}: ${res.body.take(120)}")
+                    val dev = org.json.JSONObject(res.body).getJSONObject("device")
+                    val name = dev.optString("name", host)
+                    val model = dev.optString("activeModel", "")
+                    val tel = dev.optJSONObject("telemetry")
+                    if (tel != null) pairedPcTelemetry = "CPU ${tel.optInt("cpuLoadPct")}% · RAM ${tel.optInt("ramUsedPct")}% (${tel.optDouble("ramTotalGb")} GB)"
+                    "✓ $name ($model)"
+                }.getOrElse { "Error: ${it.message}" }
+            }
+            pairedPcStatus = msg
+            onDone(msg)
+        }
+    }
+
+    fun sendRemoteCommandToPc(command: String, onDone: (String) -> Unit) {
+        scope.launch {
+            val host = pairedPcHost.trim()
+            val port = pairedPcPort
+            val token = pairedPcToken.trim()
+            if (host.isBlank() || token.isBlank()) {
+                onDone(if (lang == "en") "Connect your PC first." else "Сначала подключи ПК выше.")
+                return@launch
+            }
+            val reply = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val url = "http://$host:$port/device/command"
+                    val body = org.json.JSONObject()
+                        .put("command", command)
+                        .put("fromDevice", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+                        .toString()
+                    val res = LlmClient.postRaw(url, mapOf("X-Nex-Token" to token), body, readTimeoutMs = 90000)
+                    if (!res.ok) error("HTTP ${res.code}: ${res.body.take(180)}")
+                    org.json.JSONObject(res.body).optString("reply", "Done.")
+                }.getOrElse { "Error: ${it.message}" }
+            }
+            onDone(reply)
+        }
     }
 
     fun stopVoiceInput() {

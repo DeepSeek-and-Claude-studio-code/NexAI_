@@ -133,7 +133,7 @@ class Store(private val ctx: Context) {
         set(v) { accountSp().edit().putFloat("speech_rate", v.coerceIn(0.7f, 1.4f)).apply() }
 
     var autoSpeak: Boolean
-        get() = accountSp().getBoolean("auto_speak", false)
+        get() = accountSp().getBoolean("auto_speak", true)
         set(v) { accountSp().edit().putBoolean("auto_speak", v).apply() }
 
     var wakeWordEnabled: Boolean
@@ -155,6 +155,94 @@ class Store(private val ctx: Context) {
     var lastModelsRefreshAt: Long
         get() = accountSp().getLong("last_models_refresh_at", 0L)
         set(v) { accountSp().edit().putLong("last_models_refresh_at", v).apply() }
+
+    var deviceId: String
+        get() {
+            var id = accountSp().getString("device_id", "") ?: ""
+            if (id.isBlank()) {
+                id = java.util.UUID.randomUUID().toString()
+                accountSp().edit().putString("device_id", id).apply()
+            }
+            return id
+        }
+        set(v) { accountSp().edit().putString("device_id", v).apply() }
+
+    var pairedPcHost: String
+        get() = accountSp().getString("paired_pc_host", "") ?: ""
+        set(v) { accountSp().edit().putString("paired_pc_host", v.trim()).apply() }
+
+    var pairedPcPort: Int
+        get() = accountSp().getInt("paired_pc_port", 47800)
+        set(v) { accountSp().edit().putInt("paired_pc_port", v).apply() }
+
+    var pairedPcToken: String
+        get() = accountSp().getString("paired_pc_token", "") ?: ""
+        set(v) { accountSp().edit().putString("paired_pc_token", v.trim()).apply() }
+
+    var themeMode: String
+        get() = accountSp().getString("theme_mode", "system") ?: "system"
+        set(v) { accountSp().edit().putString("theme_mode", v).apply() }
+
+    fun loadEcosystemDevices(): EcosystemDevicesState {
+        val raw = accountSp().getString("ecosystem_devices_json", "") ?: ""
+        if (raw.isBlank()) return EcosystemDevicesState()
+        return runCatching {
+            val root = JSONObject(raw)
+            val hubsArr = root.optJSONArray("hubs")
+            val hubs = mutableListOf<NexHubDevice>()
+            if (hubsArr != null) {
+                for (i in 0 until hubsArr.length()) {
+                    val o = hubsArr.getJSONObject(i)
+                    hubs.add(NexHubDevice(
+                        id = o.optString("id", "hub_$i"), model = o.optString("model", "Nex Hub Ultra"),
+                        name = o.optString("name", "Nex Hub Ultra"), connected = o.optBoolean("connected", false),
+                        wifiSsid = o.optString("wifiSsid", ""), activity = o.optString("activity", ""),
+                        character = o.optString("character", "m"), brightness = o.optInt("brightness", 75),
+                        cameraTracking = o.optBoolean("cameraTracking", true), volume = o.optInt("volume", 65),
+                        audioService = o.optString("audioService", "Яндекс Музыка"), nightDnd = o.optBoolean("nightDnd", false),
+                        keysSyncedAt = o.optLong("keysSyncedAt", 0L), lastIntercom = o.optString("lastIntercom", "")
+                    ))
+                }
+            }
+            val c = root.optJSONObject("clip"); val w = root.optJSONObject("watch"); val g = root.optJSONObject("glasses")
+            EcosystemDevicesState(
+                hubs = if (hubs.isNotEmpty()) hubs else listOf(NexHubDevice()),
+                clip = NexClipDevice(
+                    name = c?.optString("name", "Nex AI Clip") ?: "Nex AI Clip", connected = c?.optBoolean("connected", false) ?: false,
+                    battery = c?.optInt("battery", 88) ?: 88, freeStoragePct = c?.optInt("freeStoragePct", 74) ?: 74,
+                    continuousNotes = c?.optBoolean("continuousNotes", false) ?: false, privacyMute = c?.optBoolean("privacyMute", false) ?: false
+                ),
+                watch = NexWatchDevice(
+                    name = w?.optString("name", "Nex Watch") ?: "Nex Watch", connected = w?.optBoolean("connected", false) ?: false,
+                    battery = w?.optInt("battery", 82) ?: 82, quickVoice = w?.optBoolean("quickVoice", true) ?: true,
+                    silentHints = w?.optBoolean("silentHints", true) ?: true, shareHealthContext = w?.optBoolean("shareHealthContext", false) ?: false,
+                    hubMediaRemote = w?.optBoolean("hubMediaRemote", true) ?: true, lastPulse = w?.optInt("lastPulse", 72) ?: 72,
+                    lastSleepHours = w?.optDouble("lastSleepHours", 7.4)?.toFloat() ?: 7.4f
+                ),
+                glasses = NexGlassesDevice(
+                    name = g?.optString("name", "Nex AR Glasses") ?: "Nex AR Glasses", connected = g?.optBoolean("connected", false) ?: false,
+                    battery = g?.optInt("battery", 69) ?: 69, hudBrightness = g?.optInt("hudBrightness", 60) ?: 60,
+                    liveSubtitles = g?.optBoolean("liveSubtitles", false) ?: false, navHints = g?.optBoolean("navHints", true) ?: true
+                )
+            )
+        }.getOrElse { EcosystemDevicesState() }
+    }
+
+    fun saveEcosystemDevices(eco: EcosystemDevicesState) {
+        val hubsArr = JSONArray()
+        eco.hubs.forEach { h ->
+            hubsArr.put(JSONObject().put("id", h.id).put("model", h.model).put("name", h.name)
+                .put("connected", h.connected).put("wifiSsid", h.wifiSsid).put("activity", h.activity)
+                .put("character", h.character).put("brightness", h.brightness).put("cameraTracking", h.cameraTracking)
+                .put("volume", h.volume).put("audioService", h.audioService).put("nightDnd", h.nightDnd)
+                .put("keysSyncedAt", h.keysSyncedAt).put("lastIntercom", h.lastIntercom))
+        }
+        val root = JSONObject().put("hubs", hubsArr)
+            .put("clip", JSONObject().put("name", eco.clip.name).put("connected", eco.clip.connected).put("battery", eco.clip.battery).put("freeStoragePct", eco.clip.freeStoragePct).put("continuousNotes", eco.clip.continuousNotes).put("privacyMute", eco.clip.privacyMute))
+            .put("watch", JSONObject().put("name", eco.watch.name).put("connected", eco.watch.connected).put("battery", eco.watch.battery).put("quickVoice", eco.watch.quickVoice).put("silentHints", eco.watch.silentHints).put("shareHealthContext", eco.watch.shareHealthContext).put("hubMediaRemote", eco.watch.hubMediaRemote).put("lastPulse", eco.watch.lastPulse).put("lastSleepHours", eco.watch.lastSleepHours.toDouble()))
+            .put("glasses", JSONObject().put("name", eco.glasses.name).put("connected", eco.glasses.connected).put("battery", eco.glasses.battery).put("hudBrightness", eco.glasses.hudBrightness).put("liveSubtitles", eco.glasses.liveSubtitles).put("navHints", eco.glasses.navHints))
+        accountSp().edit().putString("ecosystem_devices_json", root.toString()).apply()
+    }
 
     var userName: String
         get() = accountSp().getString("user_name", "") ?: ""
@@ -347,6 +435,7 @@ class Store(private val ctx: Context) {
                     name = po.optString("name"),
                     description = po.optString("description"),
                     folderUri = po.optString("folderUri").takeIf { it.isNotEmpty() },
+                    instructions = po.optString("instructions", ""),
                     folderName = po.optString("folderName").takeIf { it.isNotEmpty() }
                 )
             )
@@ -429,7 +518,7 @@ class Store(private val ctx: Context) {
                     .put("id", p.id)
                     .put("name", p.name)
                     .put("description", p.description)
-                    .put("folderUri", p.folderUri ?: "")
+                    .put("folderUri", p.folderUri ?: "").put("instructions", p.instructions)
                     .put("folderName", p.folderName ?: "")
             )
         }

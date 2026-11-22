@@ -90,7 +90,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -105,7 +108,8 @@ import java.io.File
 fun ChatScreen(
     ctrl: NexController,
     onPickFiles: () -> Unit,
-    onPickProjectFolder: (String) -> Unit
+    onPickProjectFolder: (String) -> Unit,
+    onRequestPerms: (Array<String>) -> Unit = {}
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -170,6 +174,15 @@ fun ChatScreen(
                             scope.launch { drawerState.close() }
                         }
                     )
+                    NavigationDrawerItem(
+                        label = { Text(ctrl.t("devices")) },
+                        selected = false,
+                        icon = { Icon(NexIcons.MicWave, null) },
+                        onClick = {
+                            ctrl.navigate(AppScreen.DEVICES)
+                            scope.launch { drawerState.close() }
+                        }
+                    )
 
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
                     Text(
@@ -179,8 +192,23 @@ fun ChatScreen(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                     )
 
+                    OutlinedTextField(
+                        value = chatSearchQuery,
+                        onValueChange = { chatSearchQuery = it },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                        placeholder = { Text(if (ctrl.lang == "en") "Search chats…" else "Поиск по чатам…") },
+                        singleLine = true
+                    )
+                    val qSearch = chatSearchQuery.trim().lowercase()
+                    val filteredChats = remember(ctrl.chats.size, qSearch, activeChat?.messages?.size) {
+                        if (qSearch.isEmpty()) ctrl.chats.toList()
+                        else ctrl.chats.filter { s ->
+                            s.title.lowercase().contains(qSearch) ||
+                                s.messages.any { it.text.lowercase().contains(qSearch) }
+                        }
+                    }
                     LazyColumn(modifier = Modifier.weight(1f)) {
-                        items(ctrl.chats, key = { it.id }) { session ->
+                        items(filteredChats, key = { it.id }) { session ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -281,6 +309,14 @@ fun ChatScreen(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                TextButton(onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (!Perms.has(ctx, android.Manifest.permission.RECORD_AUDIO)) {
+                        onRequestPerms(arrayOf(android.Manifest.permission.RECORD_AUDIO))
+                    } else {
+                        ctrl.openVoiceMode()
+                    }
+                }) { Text("🎙 Live") }
                 IconButton(onClick = { ctrl.startNewChat(projectId = null) }) {
                     Icon(NexIcons.NewChatPen, contentDescription = ctrl.t("new_chat"))
                 }
@@ -419,9 +455,11 @@ fun ChatScreen(
                         }
                     }
                 }
-                items(if (hasUserMessages) messages else emptyList(), key = { it.id }) { msg ->
+                val shownMsgs = if (hasUserMessages) messages else emptyList()
+                val lastAssistantId = shownMsgs.lastOrNull { it.role == "assistant" }?.id
+                items(shownMsgs, key = { it.id }) { msg ->
                     Box(Modifier.animateItem()) {
-                        ChatBubble(msg = msg, ctrl = ctrl)
+                        ChatBubble(msg = msg, ctrl = ctrl, isLastAssistant = msg.id == lastAssistantId)
                     }
                 }
                 if (ctrl.isBusy && pendingConfirm == null) {
@@ -634,7 +672,13 @@ fun ChatScreen(
                                 )
                             }
                         }
-                        else -> Surface(
+                        else -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                ctrl.askWithScreenVision(inputText)
+                                inputText = ""
+                            }) { Text("👁") }
+                            Surface(
                             shape = CircleShape,
                             color = if (ctrl.isListening) MaterialTheme.colorScheme.primary else Color.Transparent,
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
@@ -642,8 +686,13 @@ fun ChatScreen(
                         ) {
                             IconButton(
                                 onClick = {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                     if (ctrl.isListening) ctrl.stopVoiceInput()
-                                    else ctrl.startVoiceInput(fromAssistOverlay = false)
+                                    else if (!Perms.has(ctx, android.Manifest.permission.RECORD_AUDIO)) {
+                                        onRequestPerms(arrayOf(android.Manifest.permission.RECORD_AUDIO))
+                                    } else {
+                                        ctrl.startVoiceInput(fromAssistOverlay = false)
+                                    }
                                 }
                             ) {
                                 Icon(
@@ -653,6 +702,42 @@ fun ChatScreen(
                                     else MaterialTheme.colorScheme.onSurface
                                 )
                             }
+                        }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (ctrl.voiceModeActive) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { ctrl.closeVoiceMode() },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (ctrl.lang == "en") "Live Voice · ${ctrl.agentName}" else "Живой голос · ${ctrl.agentName}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        IconButton(onClick = { ctrl.closeVoiceMode() }) { Icon(Icons.Default.Close, contentDescription = "Close") }
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        NexSphere(modifier = Modifier.size(220.dp), state = ctrl.sphereState, female = ctrl.female)
+                        Text(ctrl.statusLabel, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                        if (ctrl.liveTranscript.isNotBlank()) {
+                            Text(ctrl.liveTranscript, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); ctrl.bargeInAndListen() }, modifier = Modifier.weight(1f)) {
+                            Text(if (ctrl.lang == "en") "🎙 Interrupt" else "🎙 Перебить")
+                        }
+                        OutlinedButton(onClick = { ctrl.closeVoiceMode() }, modifier = Modifier.weight(1f)) {
+                            Text(if (ctrl.lang == "en") "Exit" else "Закончить")
                         }
                     }
                 }
@@ -713,8 +798,10 @@ fun ConfirmationBanner(pending: PendingConfirmation, ctrl: NexController) {
 }
 
 @Composable
-private fun ChatBubble(msg: ChatMessage, ctrl: NexController) {
+private fun ChatBubble(msg: ChatMessage, ctrl: NexController, isLastAssistant: Boolean = false) {
     val ctx = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+    var chatSearchQuery by remember { mutableStateOf("") }
     if (msg.role == "system") {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             Text(
@@ -738,12 +825,40 @@ private fun ChatBubble(msg: ChatMessage, ctrl: NexController) {
             modifier = Modifier.widthIn(max = 310.dp)
         ) {
             Column(Modifier.padding(12.dp)) {
-                if (msg.text.isNotBlank()) {
-                    Text(
+                var editing by remember(msg.id) { mutableStateOf(false) }
+                var editDraft by remember(msg.id, msg.text) { mutableStateOf(msg.text) }
+                if (editing) {
+                    OutlinedTextField(value = editDraft, onValueChange = { editDraft = it }, modifier = Modifier.fillMaxWidth())
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 6.dp)) {
+                        Button(onClick = { editing = false; ctrl.editMessage(msg.id, editDraft) }) { Text("OK") }
+                        OutlinedButton(onClick = { editing = false }) { Text("✕") }
+                    }
+                } else if (msg.text.isNotBlank()) {
+                    FormattedMessageText(
                         text = msg.text,
-                        color = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                        style = MaterialTheme.typography.bodyMedium
+                        textColor = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                        isEn = ctrl.lang == "en"
                     )
+                }
+                if (!ctrl.isBusy && !editing && (isUser || isLastAssistant)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                        if (isUser) {
+                            Text(
+                                text = if (ctrl.lang == "en") "✎ Edit" else "✎ Изменить",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.clickable { editing = true }
+                            )
+                        }
+                        if (isLastAssistant) {
+                            Text(
+                                text = if (ctrl.lang == "en") "↻ Regenerate" else "↻ Перегенерировать",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.clickable { ctrl.regenerateLast() }
+                            )
+                        }
+                    }
                 }
                 if (msg.attachmentNames.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
@@ -1157,6 +1272,51 @@ private fun TypingIndicatorBubble() {
                                 CircleShape
                             )
                     )
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun FormattedMessageText(text: String, textColor: Color, isEn: Boolean) {
+    val ctx = LocalContext.current
+    val parts = remember(text) {
+        val out = mutableListOf<Triple<Boolean, String, String>>()
+        val rx = Regex("```([a-zA-Z0-9_+-]*)\\n([\\s\\S]*?)```")
+        var last = 0
+        for (m in rx.findAll(text)) {
+            if (m.range.first > last) out.add(Triple(false, "", text.substring(last, m.range.first)))
+            out.add(Triple(true, m.groupValues[1].ifBlank { "code" }, m.groupValues[2].trimEnd()))
+            last = m.range.last + 1
+        }
+        if (last < text.length) out.add(Triple(false, "", text.substring(last)))
+        out
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        parts.forEach { (isCode, langTag, body) ->
+            if (!isCode) {
+                if (body.isNotBlank()) Text(text = body.trim(), color = textColor, style = MaterialTheme.typography.bodyMedium)
+            } else {
+                var copied by remember(body) { mutableStateOf(false) }
+                Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFF14161D), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(langTag, style = MaterialTheme.typography.labelSmall, color = Color(0xFFA6ACB8))
+                            Text(
+                                text = if (copied) (if (isEn) "Copied ✓" else "Скопировано ✓") else (if (isEn) "Copy" else "Копировать"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFD97757),
+                                modifier = Modifier.clickable {
+                                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                    cm?.setPrimaryClip(android.content.ClipData.newPlainText("Nex Code", body))
+                                    copied = true
+                                }
+                            )
+                        }
+                        Text(text = body, color = Color(0xFFEAECEF), style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                    }
                 }
             }
         }

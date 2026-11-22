@@ -59,7 +59,7 @@ class NexVoiceSession(private val ctx: Context) : VoiceInteractionSession(ctx) {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
         runCatching { ctx.startActivity(intent) }
-        hide()
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ runCatching { hide() } }, 250L)
     }
 }
 
@@ -69,6 +69,16 @@ class NexVoiceSession(private val ctx: Context) : VoiceInteractionSession(ctx) {
 class AssistActivity : ComponentActivity() {
     companion object {
         const val EXTRA_ALREADY_LISTENING = "already_listening"
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val ctrl = (application as NexApp).controller
+        val alreadyListening = intent.getBooleanExtra(EXTRA_ALREADY_LISTENING, false)
+        if (!alreadyListening && !ctrl.isBusy && !ctrl.isListening) {
+            ctrl.startVoiceInput(fromAssistOverlay = true)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

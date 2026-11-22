@@ -10,6 +10,29 @@ const llm = require('./llm');
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.gradle', '.next', '__pycache__', '.venv', 'venv', 'target']);
 const PURCHASE_REGEX = /(купить|оплат|заказ|оформит|корзин|подпис|перевест|списат|карт[ауы]|руб|₽|€|\$|buy|pay|checkout|place order|purchase|subscribe|confirm payment|transfer|billing|stripe|paypal)/i;
 
+function loadNexMd(cwd) {
+  try { const p = path.join(cwd, 'NEX.md'); if (fs.existsSync(p) && fs.statSync(p).isFile()) return fs.readFileSync(p, 'utf8').slice(0, 16000); } catch (_) {}
+  return '';
+}
+
+function computeLineDiff(beforeStr, afterStr, maxLines = 140) {
+  const a = String(beforeStr || '').split(/\r?\n/), b = String(afterStr || '').split(/\r?\n/);
+  let prefix = 0; while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
+  let suffix = 0; while (suffix < (a.length - prefix) && suffix < (b.length - prefix) && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
+  const out = [];
+  for (let i = Math.max(0, prefix - 2); i < prefix; i++) out.push('  ' + a[i]);
+  for (let i = prefix; i < a.length - suffix; i++) out.push('- ' + a[i]);
+  for (let i = prefix; i < b.length - suffix; i++) out.push('+ ' + b[i]);
+  for (let i = a.length - suffix; i < Math.min(a.length, a.length - suffix + 2); i++) out.push('  ' + a[i]);
+  return out.length > maxLines ? out.slice(0, maxLines).join('\n') + `\n… (+${out.length - maxLines} lines)` : out.join('\n');
+}
+
+function captureBeforeState(cwd, relPath) {
+  const full = safePath(cwd, relPath);
+  if (fs.existsSync(full) && fs.statSync(full).isFile()) return { relPath, existed: true, content: fs.readFileSync(full, 'utf8') };
+  return { relPath, existed: false, content: '' };
+}
+
 function safePath(cwd, rel) {
   const root = path.resolve(cwd), full = path.resolve(root, rel || '.');
   if (full !== root && !full.startsWith(root + path.sep)) throw new Error(`Path '${rel}' escapes working directory.`);
@@ -235,7 +258,7 @@ class DesktopNexCodeManager {
       }
     }
     const now = Date.now();
-    const s = { id: `nc_${now.toString(36)}_${crypto.randomBytes(3).toString('hex')}`, title: `Nex Code · ${path.basename(folder) || 'workspace'}`, cwd: folder, createdAt: now, updatedAt: now, messages: [], uiLog: [] };
+    const s = { id: `nc_${now.toString(36)}_${crypto.randomBytes(3).toString('hex')}`, title: `Nex Code · ${path.basename(folder) || 'workspace'}`, cwd: folder, createdAt: now, updatedAt: now, messages: [], uiLog: [], checkpoints: [] };
     this.saveSession(s);
     this.activeSessionId = s.id;
     return s;
@@ -264,7 +287,26 @@ class DesktopNexCodeManager {
     return s || this.createSession(os.homedir());
   }
 
-  snapshot() { return { sessions: this.listSessions(), activeSession: this.getActiveSession(), autoApprove: this.autoApprove, busy: Boolean(this.activeAbort) }; }
+  snapshot() {
+    const active = this.getActiveSession();
+    const hasNexMd = Boolean(active?.cwd && fs.existsSync(path.join(active.cwd, 'NEX.md')));
+    return { sessions: this.listSessions(), activeSession: active, hasNexMd, autoApprove: this.autoApprove, busy: Boolean(this.activeAbort) };
+  }
+
+  rollbackCheckpoint(checkpointId) {
+    const s = this.getActiveSession();
+    const cp = (s.checkpoints || []).find(c => c.id === checkpointId);
+    if (!cp) return { ok: false, error: 'Checkpoint not found' };
+    try {
+      const full = safePath(s.cwd || os.homedir(), cp.relPath);
+      if (cp.existed) { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, cp.beforeContent || '', 'utf8'); }
+      else if (fs.existsSync(full)) fs.unlinkSync(full);
+      cp.rolledBack = true;
+      s.uiLog = s.uiLog || []; s.uiLog.push({ id: `rb_${Date.now()}`, kind: 'note', text: `↩ Откачена правка: ${cp.relPath}`, ts: Date.now() });
+      this.saveSession(s);
+      return { ok: true, snapshot: this.snapshot() };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
   cancel() { if (this.activeAbort) { this.activeAbort.abort(); this.activeAbort = null; } }
 
   async sendTask({ prompt, store, target, effort, lang, safety, onUpdate, onSphere }) {
@@ -279,8 +321,10 @@ class DesktopNexCodeManager {
 
     this.activeAbort = new AbortController();
     const signal = this.activeAbort.signal;
+    const nexMd = loadNexMd(cwd);
     const sysPrompt = [
       `You are Nex Code, an autonomous agentic engineering shell working inside "${cwd}" on ${process.platform}.`,
+      nexMd ? `Repository instructions (NEX.md):\n${nexMd}` : '',
       'You can independently explore directories, search files, google documentation/fixes (web_search, web_fetch), read/edit/write/delete files, check git status/diff, and run shell commands/builds/tests.',
       'Always verify your work and self-correct errors before concluding.',
       'SAFETY RULE: NEVER complete any purchase, order, subscription, or financial payment without calling request_purchase_confirmation first.',
@@ -335,9 +379,35 @@ class DesktopNexCodeManager {
             else if (tc.name === 'git_diff') { if (onSphere) onSphere('working', 'git diff…'); out = await runShell(cwd, `git diff${a.path ? ` -- "${String(a.path).replace(/"/g, '\\"')}"` : ''}`, 15000); }
             else if (tc.name === 'web_search') { if (onSphere) onSphere('working', `${lang === 'en' ? 'Googling' : 'Ищу в сети'}: ${a.query}…`); out = await webSearch(a.query); }
             else if (tc.name === 'web_fetch') { if (onSphere) onSphere('working', lang === 'en' ? 'Reading webpage…' : 'Читаю страницу…'); out = await webFetch(a.url); }
-            else if (tc.name === 'edit_file') { const ok = this.autoApprove ? true : await safety.requestConfirmation({ title: `Edit ${a.path}`, details: `Apply patch to ${a.path}`, isPurchase: false }); out = ok ? editFile(cwd, a.path, a.old_text, a.new_text, a.replace_all) : 'User declined edit.'; }
-            else if (tc.name === 'write_file') { const ok = this.autoApprove ? true : await safety.requestConfirmation({ title: `Write ${a.path}`, details: `Write ${String(a.content || '').length} bytes to ${a.path}`, isPurchase: false }); out = ok ? writeFile(cwd, a.path, a.content) : 'User declined write.'; }
-            else if (tc.name === 'delete_file') { const ok = this.autoApprove ? true : await safety.requestConfirmation({ title: `Delete ${a.path}`, details: `Delete ${a.path}`, isPurchase: false }); out = ok ? deleteFile(cwd, a.path) : 'User declined delete.'; }
+            else if (tc.name === 'edit_file') {
+              const ok = this.autoApprove ? true : await safety.requestConfirmation({ title: `Edit ${a.path}`, details: `Apply patch to ${a.path}`, isPurchase: false });
+              if (ok) {
+                const bef = captureBeforeState(cwd, a.path); out = editFile(cwd, a.path, a.old_text, a.new_text, a.replace_all); const aft = captureBeforeState(cwd, a.path);
+                const cpId = `cp_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+                session.checkpoints = session.checkpoints || []; session.checkpoints.push({ id: cpId, relPath: a.path, existed: bef.existed, beforeContent: bef.content, ts: Date.now(), rolledBack: false });
+                entry.checkpointId = cpId; entry.diffPath = a.path; entry.diffText = computeLineDiff(bef.content, aft.content);
+              } else out = 'User declined edit.';
+            }
+            else if (tc.name === 'write_file') {
+              const ok = this.autoApprove ? true : await safety.requestConfirmation({ title: `Write ${a.path}`, details: `Write ${String(a.content || '').length} bytes to ${a.path}`, isPurchase: false });
+              if (ok) {
+                const bef = captureBeforeState(cwd, a.path); out = writeFile(cwd, a.path, a.content);
+                const cpId = `cp_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+                session.checkpoints = session.checkpoints || []; session.checkpoints.push({ id: cpId, relPath: a.path, existed: bef.existed, beforeContent: bef.content, ts: Date.now(), rolledBack: false });
+                entry.checkpointId = cpId; entry.diffPath = a.path; entry.diffText = computeLineDiff(bef.content, String(a.content || ''));
+              } else out = 'User declined write.';
+            }
+            else if (tc.name === 'delete_file') {
+              const ok = this.autoApprove ? true : await safety.requestConfirmation({ title: `Delete ${a.path}`, details: `Delete ${a.path}`, isPurchase: false });
+              if (ok) {
+                const bef = captureBeforeState(cwd, a.path); out = deleteFile(cwd, a.path);
+                if (bef.existed) {
+                  const cpId = `cp_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+                  session.checkpoints = session.checkpoints || []; session.checkpoints.push({ id: cpId, relPath: a.path, existed: true, beforeContent: bef.content, ts: Date.now(), rolledBack: false });
+                  entry.checkpointId = cpId; entry.diffPath = a.path; entry.diffText = computeLineDiff(bef.content, '');
+                }
+              } else out = 'User declined delete.';
+            }
             else if (tc.name === 'run_command') {
               const isBuy = PURCHASE_REGEX.test(String(a.command || ''));
               const ok = (!isBuy && this.autoApprove) ? true : await safety.requestConfirmation({ title: isBuy ? 'Confirm payment command' : 'Run shell command', details: a.command, isPurchase: isBuy });

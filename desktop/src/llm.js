@@ -30,6 +30,42 @@ const MODELS_ENDPOINTS = {
 
 const GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
 const providerCooldowns = new Map();
+const providerUsage = new Map();
+let usageDateKey = new Date().toISOString().slice(0, 10);
+
+function ensureUsageDate() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== usageDateKey) { usageDateKey = today; providerUsage.clear(); }
+}
+
+function recordProviderUsage(provider, promptChars, replyChars, ok, errMsg = '') {
+  ensureUsageDate();
+  const cur = providerUsage.get(provider) || { requests: 0, errors: 0, estTokens: 0, lastUsedAt: 0, lastError: '' };
+  cur.requests += 1; cur.lastUsedAt = Date.now();
+  if (ok) { cur.estTokens += Math.max(1, Math.round((Number(promptChars || 0) + Number(replyChars || 0)) / 3.8)); cur.lastError = ''; }
+  else { cur.errors += 1; cur.lastError = String(errMsg || '').slice(0, 140); }
+  providerUsage.set(provider, cur);
+}
+
+function getQuotaDashboard({ apiKeys, customBaseUrl, profileId, modelCatalog }) {
+  ensureUsageDate();
+  const chain = buildFailoverChain({ primaryProvider: null, primaryModel: null, profileId: profileId || 'quark', apiKeys, modelCatalog, customBaseUrl });
+  const rankMap = new Map();
+  chain.forEach((c, idx) => rankMap.set(c.provider, idx + 1));
+  return {
+    date: usageDateKey,
+    providers: constants.PROVIDERS.map(p => {
+      const ready = constants.isProviderReady(p, apiKeys, customBaseUrl);
+      const cd = getProviderCooldown(p);
+      const u = providerUsage.get(p) || { requests: 0, errors: 0, estTokens: 0, lastUsedAt: 0, lastError: '' };
+      return {
+        provider: p, ready, priority: rankMap.get(p) || null,
+        cooldownSec: cd ? Math.max(0, Math.ceil((cd.until - Date.now()) / 1000)) : 0,
+        cooldownReason: cd ? cd.reason : '', requestsToday: u.requests, errorsToday: u.errors, estTokensToday: u.estTokens, lastError: u.lastError
+      };
+    })
+  };
+}
 
 function markProviderCooldown(provider, reason, isHardQuota = false) {
   const durationMs = isHardQuota ? 30 * 60 * 1000 : 5 * 60 * 1000;
@@ -149,8 +185,11 @@ async function completeWithFailover({
         systemPrompt, messages: safeMessages, tools, effort, webSearchEnabled, signal
       });
       clearProviderCooldown(cand.provider);
+      const pChars = (systemPrompt || '').length + safeMessages.reduce((acc, m) => acc + String(m.text || '').length, 0);
+      recordProviderUsage(cand.provider, pChars, String(resp.text || '').length, true);
       return { ...resp, usedProvider: cand.provider, usedModel: cand.model, switchedFrom: (provider && cand.provider !== provider) ? provider : switchedFrom };
     } catch (err) {
+      recordProviderUsage(cand.provider, 0, 0, false, err?.message || String(err));
       lastError = err;
       const check = isQuotaOrFailoverError(err);
       if (autoFailover && check.failover && i < chain.length - 1) {
@@ -441,5 +480,5 @@ async function transcribeAudio({ geminiKey, openaiKey, groqKey, geminiModels, au
 
 module.exports = {
   complete, completeWithFailover, fetchModels, transcribeAudio, buildGeminiContents,
-  buildFailoverChain, isQuotaOrFailoverError, markProviderCooldown, getProviderCooldown, clearProviderCooldown
+  buildFailoverChain, isQuotaOrFailoverError, markProviderCooldown, getProviderCooldown, clearProviderCooldown, getQuotaDashboard
 };

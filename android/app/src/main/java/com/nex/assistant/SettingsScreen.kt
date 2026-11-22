@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -32,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -98,7 +100,7 @@ fun SettingsScreen(
             ) {
                 when (tab) {
                     SettingsTab.AI -> AiSettingsTab(ctrl)
-                    SettingsTab.VOICE -> VoiceSettingsTab(ctrl)
+                    SettingsTab.VOICE -> VoiceSettingsTab(ctrl, onRequestPerms)
                     SettingsTab.MEMORY -> MemorySettingsTab(ctrl)
                     SettingsTab.ACCESS -> AccessSettingsTab(ctrl, ctx, onRequestPerms)
                     SettingsTab.SAFETY -> SafetySettingsTab(ctrl)
@@ -143,6 +145,26 @@ private fun AiSettingsTab(ctrl: NexController) {
     if (refreshStatus.isNotEmpty()) {
         Text(refreshStatus, style = MaterialTheme.typography.bodySmall, color = NexOkColor)
     }
+    var quotaTick by remember { mutableStateOf(0) }
+    val quotaRows = remember(quotaTick, ctrl.apiKeys, ctrl.customBaseUrl, ctrl.selectedProfileId) {
+        LlmClient.getQuotaDashboard(ctrl.apiKeys, ctrl.customBaseUrl, ctrl.selectedProfileId, ctrl.modelCatalog)
+    }
+    Surface(shape = RoundedCornerShape(14.dp), tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(if (isEn) "Limits & Usage Dashboard" else "Дашборд лимитов за день", fontWeight = FontWeight.Bold)
+                TextButton(onClick = { quotaTick++ }) { Text(if (isEn) "Refresh" else "Обновить") }
+            }
+            quotaRows.filter { it.ready || it.requestsToday > 0 }.forEach { r ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    val dot = if (r.cooldownSec > 0) "🟡" else if (r.ready) "🟢" else "⚪"
+                    val st = if (r.cooldownSec > 0) "${r.cooldownSec}s" else "${r.requestsToday} req · ~${r.estTokensToday} tok"
+                    Text("$dot #${r.priority ?: "-"} ${r.provider} · $st", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    if (r.cooldownSec > 0) TextButton(onClick = { LlmClient.clearCooldown(r.provider); quotaTick++ }) { Text(if (isEn) "Reset" else "Сброс") }
+                }
+            }
+        }
+    }
 
     LlmClient.PROVIDERS.forEach { provider ->
         val note = LlmClient.PROVIDER_NOTES[provider].orEmpty()
@@ -169,7 +191,7 @@ private fun AiSettingsTab(ctrl: NexController) {
 }
 
 @Composable
-private fun VoiceSettingsTab(ctrl: NexController) {
+private fun VoiceSettingsTab(ctrl: NexController, onRequestPerms: (Array<String>) -> Unit) {
     val ctx = LocalContext.current
     Text(ctrl.t("voice_label"), fontWeight = FontWeight.SemiBold)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -196,8 +218,34 @@ private fun VoiceSettingsTab(ctrl: NexController) {
         title = ctrl.t("wake_word_title"),
         desc = ctrl.t("wake_word_desc"),
         checked = ctrl.wakeWordEnabled,
-        onCheckedChange = { ctrl.updateWakeWordEnabled(it) }
+        onCheckedChange = { want ->
+            if (want && !Perms.has(ctx, android.Manifest.permission.RECORD_AUDIO)) {
+                val req = if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    arrayOf(android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    arrayOf(android.Manifest.permission.RECORD_AUDIO)
+                }
+                onRequestPerms(req)
+            } else {
+                ctrl.updateWakeWordEnabled(want)
+            }
+        }
     )
+
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { ctrl.testVoice() }, modifier = Modifier.weight(1f)) {
+            Text(if (ctrl.lang == "en") "🔊 Test Voice" else "🔊 Проверить голос")
+        }
+        OutlinedButton(
+            onClick = {
+                val i = android.content.Intent(ctx, AssistActivity::class.java)
+                runCatching { ctx.startActivity(i) }
+            },
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(if (ctrl.lang == "en") "🎙 Voice Overlay" else "🎙 Голосовой экран")
+        }
+    }
 
     HorizontalDivider()
     OutlinedButton(
@@ -211,6 +259,8 @@ private fun VoiceSettingsTab(ctrl: NexController) {
 @Composable
 private fun MemorySettingsTab(ctrl: NexController) {
     var newFact by remember { mutableStateOf("") }
+    var selectedCat by remember { mutableStateOf("Личное") }
+    val cats = if (ctrl.lang == "en") listOf("Personal", "Work", "Prefs", "Projects") else listOf("Личное", "Работа", "Предпочтения", "Проекты")
 
     SettingSwitchRow(
         title = ctrl.t("remember_from_chats"),
@@ -249,9 +299,14 @@ private fun MemorySettingsTab(ctrl: NexController) {
             singleLine = true
         )
         Button(onClick = {
-            ctrl.addMemory(newFact)
+            ctrl.addCategorizedMemory(selectedCat, newFact)
             newFact = ""
         }) { Text(ctrl.t("add_btn")) }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        cats.forEach { cat ->
+            FilterChip(selected = selectedCat == cat, onClick = { selectedCat = cat }, label = { Text(cat) })
+        }
     }
     if (ctrl.memories.isNotEmpty()) {
         TextButton(onClick = { ctrl.clearMemories() }) {
@@ -434,6 +489,14 @@ private fun SafetySettingsTab(ctrl: NexController) {
 
 @Composable
 private fun LanguageSettingsTab(ctrl: NexController) {
+    val isEn = ctrl.lang == "en"
+    Text(if (isEn) "Appearance Theme" else "Тема оформления", fontWeight = FontWeight.SemiBold)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(selected = ctrl.themeMode == "system", onClick = { ctrl.updateThemeMode("system") }, label = { Text(if (isEn) "System" else "Системная") })
+        FilterChip(selected = ctrl.themeMode == "light", onClick = { ctrl.updateThemeMode("light") }, label = { Text(if (isEn) "Light" else "Светлая") })
+        FilterChip(selected = ctrl.themeMode == "dark", onClick = { ctrl.updateThemeMode("dark") }, label = { Text("AMOLED") })
+    }
+    HorizontalDivider()
     Text(ctrl.t("interface_lang"), fontWeight = FontWeight.SemiBold)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FilterChip(selected = ctrl.lang == "ru", onClick = { ctrl.updateLang("ru") }, label = { Text("Русский") })

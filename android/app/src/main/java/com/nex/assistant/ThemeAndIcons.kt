@@ -13,37 +13,37 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
-private val NexLightColors = lightColorScheme(
-    primary = Color(0xFF1A1D22),
-    onPrimary = Color(0xFFF6F7F9),
-    primaryContainer = Color(0xFF2A2D34),
-    onPrimaryContainer = Color(0xFFF2F3F5),
-    secondary = Color(0xFF4F5561),
+private fun nexLightColors(female: Boolean) = lightColorScheme(
+    primary = if (female) Color(0xFFD65E6E) else Color(0xFFD97757),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = if (female) Color(0xFFFCE4E7) else Color(0xFFFBE7DF),
+    onPrimaryContainer = Color(0xFF1C1B19),
+    secondary = Color(0xFF6BA292),
     onSecondary = Color(0xFFFFFFFF),
-    background = Color(0xFFECEEF1),
-    onBackground = Color(0xFF14161A),
-    surface = Color(0xFFF8F9FB),
-    onSurface = Color(0xFF14161A),
-    surfaceVariant = Color(0xFFE4E7EC),
-    onSurfaceVariant = Color(0xFF5A606B),
-    outline = Color(0xFFD0D4DC),
+    background = Color(0xFFF5F3EE),
+    onBackground = Color(0xFF1C1B19),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF1C1B19),
+    surfaceVariant = Color(0xFFECE8DF),
+    onSurfaceVariant = Color(0xFF625E56),
+    outline = Color(0xFFDDD8CC),
     error = Color(0xFFB54132)
 )
 
-private val NexDarkColors = darkColorScheme(
-    primary = Color(0xFFECEEF2),
-    onPrimary = Color(0xFF14161A),
-    primaryContainer = Color(0xFFD9DCE3),
-    onPrimaryContainer = Color(0xFF14161A),
-    secondary = Color(0xFFA0A6B2),
-    onSecondary = Color(0xFF14161A),
-    background = Color(0xFF0C0D10),
-    onBackground = Color(0xFFECEEF2),
-    surface = Color(0xFF16181D),
-    onSurface = Color(0xFFECEEF2),
-    surfaceVariant = Color(0xFF22252C),
+private fun nexAmoledDarkColors(female: Boolean) = darkColorScheme(
+    primary = if (female) Color(0xFFE06D7A) else Color(0xFFD97757),
+    onPrimary = Color(0xFF120B08),
+    primaryContainer = if (female) Color(0xFF3A1D22) else Color(0xFF361F17),
+    onPrimaryContainer = Color(0xFFF3EFEA),
+    secondary = Color(0xFF6BA292),
+    onSecondary = Color(0xFF0A1411),
+    background = Color(0xFF000000),
+    onBackground = Color(0xFFF0EFEA),
+    surface = Color(0xFF0E1015),
+    onSurface = Color(0xFFF0EFEA),
+    surfaceVariant = Color(0xFF181B22),
     onSurfaceVariant = Color(0xFF9AA0AC),
-    outline = Color(0xFF2C303A),
+    outline = Color(0xFF262A34),
     error = Color(0xFFE07A6A)
 )
 
@@ -51,9 +51,9 @@ val NexOkColor = Color(0xFF2F8F5B)
 val NexWarnColor = Color(0xFFB5651D)
 
 @Composable
-fun NexTheme(content: @Composable () -> Unit) {
-    val scheme = if (isSystemInDarkTheme()) NexDarkColors else NexLightColors
-    MaterialTheme(colorScheme = scheme, content = content)
+fun NexTheme(themeMode: String = "system", femaleAccent: Boolean = false, content: @Composable () -> Unit) {
+    val dark = when (themeMode) { "dark" -> true; "light" -> false; else -> isSystemInDarkTheme() }
+    MaterialTheme(colorScheme = if (dark) nexAmoledDarkColors(femaleAccent) else nexLightColors(femaleAccent), content = content)
 }
 
 /**

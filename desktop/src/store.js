@@ -12,7 +12,7 @@ function createDefaultAccountState() {
     lang: 'ru',
     voice: 'm',
     speechRate: 1.0,
-    autoSpeak: false,
+    autoSpeak: true,
     wakeWordEnabled: false,
     userName: '',
     showCompanion: true,
@@ -34,6 +34,15 @@ function createDefaultAccountState() {
     autoRefreshModels: true,
     autoFailover: true,
     lastModelsRefreshAt: 0,
+    deviceId: '',
+    deviceName: '',
+    devicePairingToken: '',
+    themeMode: 'system',
+    sidebarCollapsed: false,
+    lanBridgeEnabled: true,
+    pairedDevices: [],
+    remoteHistory: [],
+    ecosystemDevices: null,
     storageConfig: {
       backend: 'webdav',
       webdav: { url: '', username: '', passwordEnc: '', rootFolder: 'Nex' },
@@ -201,6 +210,10 @@ class NexStore {
       merged.googleTokensEnc = Object.assign({}, def.googleTokensEnc, parsed.googleTokensEnc || {});
       merged.modelCatalog = Object.assign({}, JSON.parse(JSON.stringify(DEFAULT_MODELS)), parsed.modelCatalog || {});
       if (!Array.isArray(merged.mediaItems)) merged.mediaItems = [];
+      merged.memories = (Array.isArray(merged.memories) ? merged.memories : []).map((m, idx) => typeof m === 'string' ? { id: `mem_${idx}_${Date.now().toString(36)}`, text: m, category: 'personal', updatedAt: Date.now() } : { id: m.id || `mem_${idx}`, text: String(m.text || ''), category: m.category || 'personal', updatedAt: m.updatedAt || Date.now() }).filter(m => m.text.trim().length > 0);
+      merged.projects = (Array.isArray(merged.projects) ? merged.projects : []).map(p => Object.assign({ instructions: '' }, p));
+      merged.artifacts = (Array.isArray(merged.artifacts) ? merged.artifacts : []).map(a => Object.assign({ versions: [] }, a));
+      merged.mediaItems = merged.mediaItems.map(mi => Object.assign({ tags: [] }, mi));
       if (!Array.isArray(merged.chats) || !merged.chats.length) {
         merged.chats = def.chats;
         merged.activeChatId = def.activeChatId;
@@ -326,6 +339,13 @@ class NexStore {
       autoRefreshModels: s.autoRefreshModels !== false,
       autoFailover: s.autoFailover !== false,
       lastModelsRefreshAt: s.lastModelsRefreshAt || 0,
+      deviceName: s.deviceName || '',
+      devicePairingToken: s.devicePairingToken || '',
+      themeMode: s.themeMode || 'system',
+      sidebarCollapsed: Boolean(s.sidebarCollapsed),
+      lanBridgeEnabled: s.lanBridgeEnabled !== false,
+      pairedDevices: s.pairedDevices || [],
+      remoteHistory: (s.remoteHistory || []).slice(0, 30),
       storageConfig: {
         backend: s.storageConfig?.backend || 'webdav',
         webdav: { url: s.storageConfig?.webdav?.url || '', username: s.storageConfig?.webdav?.username || '', hasPassword: Boolean(s.storageConfig?.webdav?.passwordEnc), rootFolder: s.storageConfig?.webdav?.rootFolder || 'Nex' },

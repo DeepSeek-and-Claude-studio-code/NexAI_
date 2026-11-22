@@ -15,8 +15,10 @@
       <button class="sb-btn" id="btnProjects">Проекты</button>
       <button class="sb-btn" id="btnArtifacts">Артефакты</button>
       <button class="sb-btn" id="btnStudio">Фото и видео</button>
-      <button class="sb-btn" id="btnNexCode">Nex Code (терминал)</button>
+      <button class="sb-btn" id="btnNexCode">Nex Code (агент)</button>
+      <button class="sb-btn" id="btnDevices">Устройства</button>
     </div>
+    <div class="sb-search"><input type="search" id="chatSearchInput" placeholder="Поиск по чатам…"></div>
     <div class="sb-label" id="lblChats">Чаты</div>
     <div class="sb-chats" id="chatList"></div>
     <div class="sb-foot">
@@ -30,6 +32,7 @@
       <button class="icon-btn" id="btnToggleSb" title="Menu">☰</button>
       <div class="title" id="topTitle">Nex</div>
       <button class="pill-btn" id="btnModelPill">Nex Quark ▾</button>
+      <button class="pill-btn small" id="btnVoiceMode" title="Live Voice Mode">🎙 Live</button>
       <button class="icon-btn" id="btnToggleComp" title="Companion">◉</button>
     </header>
 
@@ -55,6 +58,7 @@
           <div class="plus-menu" id="plusMenu" hidden></div>
         </div>
         <textarea id="chatInput" rows="1" placeholder="Напиши Нексу…"></textarea>
+        <button class="icon-btn round" id="btnScreenVision" title="Посмотри на экран">👁</button>
         <button class="icon-btn round" id="btnMic" title="Voice">🎤</button>
         <button class="icon-btn round send-btn" id="btnSend">↑</button>
       </div>
@@ -66,6 +70,7 @@
     <section class="view page" id="viewStudio" hidden></section>
     <section class="view page" id="viewSettings" hidden></section>
     <section class="view" id="viewNexCode" hidden></section>
+    <section class="view page" id="viewDevices" hidden></section>
     <section class="view page" id="viewAccount" hidden></section>
   </div>
 </div>
@@ -74,6 +79,7 @@
   <div class="modal-card" id="modelModalBody"></div>
 </div>
 
+<div class="voice-mode-overlay" id="voiceModeOverlay" hidden><div class="vm-card"><div class="vm-head"><span class="vm-title" id="vmTitle">Живой голосовой режим</span><button class="icon-btn" id="btnVmClose" title="Close">✕</button></div><canvas id="vmSphere" width="260" height="260"></canvas><div class="vm-status" id="vmStatus">Слушает…</div><div class="vm-transcript" id="vmTranscript"></div><div class="vm-actions"><button class="btn" id="btnVmBarge">🎙 Перебить / Говорить</button><button class="btn outline" id="btnVmExit">Закончить</button></div></div></div>
 <div class="onb-overlay" id="onbOverlay" hidden>
   <div class="onb-card" id="onbCard"></div>
 </div>

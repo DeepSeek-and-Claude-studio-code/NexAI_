@@ -224,6 +224,7 @@ data class ProjectItem(
     val name: String,
     val description: String = "",
     val folderUri: String? = null,
+    val instructions: String = "",
     val folderName: String? = null
 )
 
@@ -285,4 +286,41 @@ data class StorageStats(
     val attachmentBytes: Long = 0L,
     val chatCount: Int = 0,
     val keysCount: Int = 0
+)
+
+
+data class ProviderQuotaRow(
+    val provider: String, val ready: Boolean, val priority: Int?,
+    val cooldownSec: Int, val requestsToday: Int, val errorsToday: Int, val estTokensToday: Int
+)
+
+data class NexHubDevice(
+    val id: String = "hub_living", val model: String = "Nex Hub Ultra", val name: String = "Nex Hub Ultra · Гостиная",
+    val connected: Boolean = false, val wifiSsid: String = "", val activity: String = "Ожидает подключения",
+    val character: String = "m", val brightness: Int = 75, val cameraTracking: Boolean = true,
+    val volume: Int = 65, val audioService: String = "Яндекс Музыка", val nightDnd: Boolean = false,
+    val keysSyncedAt: Long = 0L, val lastIntercom: String = ""
+)
+
+data class NexClipDevice(
+    val name: String = "Nex AI Clip", val connected: Boolean = false, val battery: Int = 88,
+    val freeStoragePct: Int = 74, val continuousNotes: Boolean = false, val privacyMute: Boolean = false
+)
+
+data class NexWatchDevice(
+    val name: String = "Nex Watch", val connected: Boolean = false, val battery: Int = 82,
+    val quickVoice: Boolean = true, val silentHints: Boolean = true, val shareHealthContext: Boolean = false,
+    val hubMediaRemote: Boolean = true, val lastPulse: Int = 72, val lastSleepHours: Float = 7.4f
+)
+
+data class NexGlassesDevice(
+    val name: String = "Nex AR Glasses", val connected: Boolean = false, val battery: Int = 69,
+    val hudBrightness: Int = 60, val liveSubtitles: Boolean = false, val navHints: Boolean = true
+)
+
+data class EcosystemDevicesState(
+    val hubs: List<NexHubDevice> = listOf(NexHubDevice()),
+    val clip: NexClipDevice = NexClipDevice(),
+    val watch: NexWatchDevice = NexWatchDevice(),
+    val glasses: NexGlassesDevice = NexGlassesDevice()
 )

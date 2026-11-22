@@ -122,8 +122,42 @@ object LlmClient {
         "NVIDIA" to "https://integrate.api.nvidia.com/v1/models"
     )
 
+    private data class UsageCounter(val requests: Int = 0, val errors: Int = 0, val estTokens: Int = 0)
     private val providerCooldowns = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val providerUsage = java.util.concurrent.ConcurrentHashMap<String, UsageCounter>()
+    @Volatile private var usageDayKey: String = ""
+
+    private fun ensureUsageDay() {
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        if (today != usageDayKey) { usageDayKey = today; providerUsage.clear() }
+    }
+
+    private fun recordUsage(provider: String, promptChars: Int, replyChars: Int, ok: Boolean) {
+        ensureUsageDay()
+        val cur = providerUsage[provider] ?: UsageCounter()
+        val addTok = if (ok) maxOf(1, ((promptChars + replyChars) / 3.8).toInt()) else 0
+        providerUsage[provider] = cur.copy(requests = cur.requests + 1, errors = cur.errors + if (ok) 0 else 1, estTokens = cur.estTokens + addTok)
+    }
+
     fun clearCooldown(provider: String) { providerCooldowns.remove(provider) }
+
+    fun getQuotaDashboard(allKeys: Map<String, String>, customBaseUrl: String, profileId: String?, catalog: Map<String, List<String>>): List<ProviderQuotaRow> {
+        ensureUsageDay()
+        val now = System.currentTimeMillis()
+        val order = mutableListOf<String>()
+        (NexProfile.fromId(profileId) ?: NexProfile.QUARK).textRoutes.forEach { r ->
+            if (isProviderReady(r.provider, allKeys, customBaseUrl) && !order.contains(r.provider)) order.add(r.provider)
+        }
+        PROVIDERS.forEach { p -> if (isProviderReady(p, allKeys, customBaseUrl) && !order.contains(p)) order.add(p) }
+        return PROVIDERS.map { p ->
+            val ready = isProviderReady(p, allKeys, customBaseUrl)
+            val cdUntil = providerCooldowns[p] ?: 0L
+            val cdSec = if (cdUntil > now) ((cdUntil - now) / 1000L).toInt().coerceAtLeast(1) else 0
+            val u = providerUsage[p] ?: UsageCounter()
+            val idx = order.indexOf(p)
+            ProviderQuotaRow(p, ready, if (idx >= 0) idx + 1 else null, cdSec, u.requests, u.errors, u.estTokens)
+        }
+    }
     fun isProviderReady(provider: String, keys: Map<String, String>, customBaseUrl: String = ""): Boolean =
         if (provider == "Custom") customBaseUrl.trim().isNotEmpty() else !keys[provider].isNullOrBlank()
 
@@ -205,8 +239,11 @@ object LlmClient {
                     else -> callOpenAiCompatible(cand.provider, cand.model, key, customBaseUrl, systemPrompt, safeMsgs, tools, effort, includeEffort = true)
                 }
                 providerCooldowns.remove(cand.provider)
+                val pChars = systemPrompt.length + safeMsgs.sumOf { it.text.length }
+                recordUsage(cand.provider, pChars, resp.text.length, ok = true)
                 return@withContext resp.copy(usedProvider = cand.provider, usedModel = cand.model, switchedFrom = if (cand.provider != primaryProvider) primaryProvider else switchedFrom)
             } catch (e: Exception) {
+                recordUsage(cand.provider, 0, 0, ok = false)
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 lastErr = e
                 val (shouldFailover, isHard) = isQuotaOrFailoverError(e.message.orEmpty())

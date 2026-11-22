@@ -16,7 +16,15 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,7 +40,7 @@ class MainActivity : ComponentActivity() {
         val ctrl = (application as NexApp).controller
         handleAuthIntent(intent, ctrl)
         setContent {
-            NexTheme {
+            NexTheme(themeMode = ctrl.themeMode, femaleAccent = ctrl.voice == "f") {
                 Surface(
                     modifier = Modifier
                         .fillMaxSize()
@@ -126,6 +134,32 @@ private fun NexRoot(ctrl: NexController) {
         folderTargetProjectId = null
     }
 
+    val showBottomBar = ctrl.screen in setOf(
+        AppScreen.CHAT, AppScreen.DEVICES, AppScreen.PROJECTS, AppScreen.ARTIFACTS, AppScreen.MEDIA_STUDIO
+    )
+    Scaffold(
+        bottomBar = {
+            if (showBottomBar) {
+                NavigationBar {
+                    listOf(
+                        Triple(AppScreen.CHAT, if (ctrl.lang == "en") "Chat" else "Чат", NexIcons.NewChatPen),
+                        Triple(AppScreen.DEVICES, ctrl.t("devices"), NexIcons.MicWave),
+                        Triple(AppScreen.PROJECTS, ctrl.t("projects"), NexIcons.Folder),
+                        Triple(AppScreen.ARTIFACTS, ctrl.t("artifacts"), NexIcons.Artifacts),
+                        Triple(AppScreen.MEDIA_STUDIO, if (ctrl.lang == "en") "Studio" else "Студия", NexIcons.MediaEdit)
+                    ).forEach { (scr, lbl, ic) ->
+                        NavigationBarItem(
+                            selected = ctrl.screen == scr,
+                            onClick = { ctrl.navigate(scr) },
+                            icon = { Icon(ic, contentDescription = lbl) },
+                            label = { Text(lbl, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        )
+                    }
+                }
+            }
+        }
+    ) { innerPad ->
+    Box(modifier = Modifier.fillMaxSize().padding(innerPad)) {
     AnimatedContent(
         targetState = ctrl.screen,
         transitionSpec = {
@@ -144,7 +178,8 @@ private fun NexRoot(ctrl: NexController) {
                 onPickProjectFolder = { pid ->
                     folderTargetProjectId = pid
                     folderPicker.launch(null)
-                }
+                },
+                onRequestPerms = { perms -> permLauncher.launch(perms) }
             )
             AppScreen.PROJECTS -> ProjectsScreen(
                 ctrl = ctrl,
@@ -155,6 +190,10 @@ private fun NexRoot(ctrl: NexController) {
             )
             AppScreen.ARTIFACTS -> ArtifactsLibraryScreen(ctrl)
             AppScreen.ARTIFACT_VIEW -> ArtifactViewScreen(ctrl)
+            AppScreen.DEVICES -> DevicesScreen(
+                ctrl = ctrl,
+                onRequestPerms = { perms -> permLauncher.launch(perms) }
+            )
             AppScreen.MEDIA_STUDIO -> MediaStudioScreen(
                 ctrl = ctrl,
                 onPickPhoto = { photoPicker.launch(arrayOf("image/*")) },
@@ -176,5 +215,7 @@ private fun NexRoot(ctrl: NexController) {
                 }
             )
         }
+    }
+    }
     }
 }

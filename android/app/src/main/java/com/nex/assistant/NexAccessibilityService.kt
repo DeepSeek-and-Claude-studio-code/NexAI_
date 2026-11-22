@@ -14,6 +14,19 @@ data class ScreenElement(
 )
 
 class NexAccessibilityService : AccessibilityService() {
+    fun readCurrentScreenText(): String {
+        val root = rootInActiveWindow ?: return ""
+        val sb = StringBuilder()
+        fun walk(node: android.view.accessibility.AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > 12 || sb.length > 3500) return
+            val t = node.text?.toString()?.trim().orEmpty()
+            val d = node.contentDescription?.toString()?.trim().orEmpty()
+            if (t.isNotEmpty()) sb.appendLine(t) else if (d.isNotEmpty()) sb.appendLine(d)
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return sb.toString().trim()
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()

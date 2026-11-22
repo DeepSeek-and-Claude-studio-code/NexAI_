@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const llm = require('./llm');
 const mail = require('./mail');
 const tools = require('./tools');
+const rag = require('./rag');
 
 function buildToolSpecs({ webSearchEnabled, hasFolder }) {
   const list = [
@@ -168,6 +169,7 @@ async function runAgentTurn({
   apiKey,
   effort,
   projectFolder,
+  projectInstructions,
   history,
   onStatus,
   signal
@@ -193,10 +195,16 @@ async function runAgentTurn({
   ].filter(Boolean);
 
   if (s.memoryEnabled && s.memories.length) {
-    sysLines.push('Saved user memory:\n' + s.memories.map(m => `- ${m}`).join('\n'));
+    sysLines.push('Saved user memory:\n' + s.memories.map(m => typeof m === 'string' ? `- ${m}` : `- [${m.category || 'personal'}] ${m.text}`).join('\n'));
   }
+  if (projectInstructions && String(projectInstructions).trim()) sysLines.push(`Project custom rules / instructions:\n${String(projectInstructions).trim()}`);
   if (projectFolder) {
     sysLines.push(`Active project working folder: ${projectFolder}`);
+    const lastUserMsg = [...(history || [])].reverse().find(h => h.role === 'user');
+    if (lastUserMsg && lastUserMsg.text) {
+      const hits = rag.searchFolder(projectFolder, lastUserMsg.text, 4);
+      if (hits.length) sysLines.push('Relevant local project knowledge base snippets (BM25 RAG):\n' + hits.map(h => `[${h.path}]\n${h.text}`).join('\n---\n'));
+    }
   }
 
   const systemPrompt = sysLines.join('\n');

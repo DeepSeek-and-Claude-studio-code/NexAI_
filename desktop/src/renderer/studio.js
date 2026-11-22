@@ -68,7 +68,34 @@ window.NexMediaStudio = (function () {
     }
 
     // Saved media gallery
-    const gallery = state.mediaItems || [];
+    if (currentItem && !currentItem.isVideo) {
+      const tagRow = el('div', 'flex-row'); tagRow.style.margin = '10px 0';
+      const tInp = el('input'); tInp.type = 'text'; tInp.value = (currentItem.tags || []).join(', ');
+      tInp.placeholder = isEn ? 'Tags (comma-separated)…' : 'Теги через запятую…';
+      const tBtn = el('button', 'btn outline', isEn ? 'Save Tags' : 'Сохранить теги');
+      tBtn.onclick = async () => { await window.nexApi.updateMediaTags(currentItem.id, tInp.value.split(',').map(x => x.trim()).filter(Boolean)); status.textContent = isEn ? 'Tags saved.' : 'Теги сохранены.'; };
+      tagRow.appendChild(tInp); tagRow.appendChild(tBtn); root.appendChild(tagRow);
+      const prevOrig = (state.mediaItems || []).find(x => !x.isVideo && x.id !== currentItem.id);
+      if (prevOrig) {
+        const cmpWrap = el('div', 'card-box'), cmpBtn = el('button', 'pill-btn small', isEn ? 'Compare Before / After' : 'Сравнить До / После'), cmpBox = el('div', 'compare-grid'); cmpBox.hidden = true;
+        cmpBtn.onclick = () => {
+          cmpBox.hidden = !cmpBox.hidden;
+          if (!cmpBox.hidden && !cmpBox.childElementCount) {
+            const c1 = el('div'); c1.appendChild(el('small', '', isEn ? 'Before' : 'До')); const i1 = el('img'); i1.src = toFileUrl(prevOrig.filePath); c1.appendChild(i1);
+            const c2 = el('div'); c2.appendChild(el('small', '', isEn ? 'After' : 'После')); const i2 = el('img'); i2.src = toFileUrl(currentItem.filePath); c2.appendChild(i2);
+            cmpBox.appendChild(c1); cmpBox.appendChild(c2);
+          }
+        };
+        cmpWrap.appendChild(cmpBtn); cmpWrap.appendChild(cmpBox); root.appendChild(cmpWrap);
+      }
+    }
+    const qStudio = (window.__nexStudioQuery || '').trim().toLowerCase();
+    const sRow = el('div', 'flex-row'); sRow.style.marginTop = '14px';
+    const sInp = el('input'); sInp.type = 'search'; sInp.value = window.__nexStudioQuery || '';
+    sInp.placeholder = isEn ? 'Search gallery by prompt or tag…' : 'Поиск по галерее (промпт или тег)…';
+    sInp.oninput = () => { window.__nexStudioQuery = sInp.value; render({ root, state, currentItem, onSelectItem, tr }); };
+    sRow.appendChild(sInp); root.appendChild(sRow);
+    const gallery = (state.mediaItems || []).filter(it => !qStudio || `${it.prompt || ''} ${it.modelName || ''} ${(it.tags || []).join(' ')}`.toLowerCase().includes(qStudio));
     if (gallery.length) {
       const h = el('h3', '', isEn ? `Saved Photos & Videos (${gallery.length})` : `Сохранённые фото и видео (${gallery.length})`);
       h.style.marginTop = '18px';
