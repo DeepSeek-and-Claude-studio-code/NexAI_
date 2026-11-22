@@ -139,13 +139,13 @@ object LlmClient {
     }
 
     private fun isQuotaOrFailoverError(msg: String): Pair<Boolean, Boolean> {
-        val code = Regex("HTTP\s+(\d{3})", RegexOption.IGNORE_CASE).find(msg)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-        val hardRx = Regex("(insufficient[_\s-]?(balance|quota|funds|credit)|credit[s]?\s*(exhausted|depleted)|billing|payment\s*required|daily\s+limit|monthly\s+limit)", RegexOption.IGNORE_CASE)
-        val softRx = Regex("(rate[_\s-]?limit|too\s+many\s+requests|resource[_\s-]?exhausted|quota|overloaded|high\s+demand|temporarily\s+unavailable|limit\s+exceeded)", RegexOption.IGNORE_CASE)
+        val code = Regex("""HTTP\s+(\d{3})""", RegexOption.IGNORE_CASE).find(msg)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+        val hardRx = Regex("""(insufficient[_\s-]?(balance|quota|funds|credit)|credit[s]?\s*(exhausted|depleted)|billing|payment\s*required|daily\s+limit|monthly\s+limit)""", RegexOption.IGNORE_CASE)
+        val softRx = Regex("""(rate[_\s-]?limit|too\s+many\s+requests|resource[_\s-]?exhausted|quota|overloaded|high\s+demand|temporarily\s+unavailable|limit\s+exceeded)""", RegexOption.IGNORE_CASE)
         if (code == 402 || hardRx.containsMatchIn(msg)) return true to true
         if (code == 429 || code == 503 || code == 529 || softRx.containsMatchIn(msg)) return true to false
-        if (code == 403 && Regex("(quota|limit|credit|billing|exhausted|balance)", RegexOption.IGNORE_CASE).containsMatchIn(msg)) return true to true
-        if (code == 404 && Regex("(model|not\s+found)", RegexOption.IGNORE_CASE).containsMatchIn(msg)) return true to false
+        if (code == 403 && Regex("""(quota|limit|credit|billing|exhausted|balance)""", RegexOption.IGNORE_CASE).containsMatchIn(msg)) return true to true
+        if (code == 404 && Regex("""(model|not\s+found)""", RegexOption.IGNORE_CASE).containsMatchIn(msg)) return true to false
         return false to false
     }
 
