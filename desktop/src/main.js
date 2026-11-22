@@ -24,7 +24,10 @@ const constants = require('./constants');
 const { NexStore } = require('./store');
 const { SafetyGuard } = require('./safety');
 const auth = require('./auth');
+const storage = require('./storage');
+const { DesktopNexCodeManager } = require('./nexcode');
 const llm = require('./llm');
+const tts = require('./tts');
 const mediaGen = require('./media');
 const mailClient = require('./mail');
 const { runAgentTurn } = require('./agent');
@@ -40,6 +43,7 @@ let bridgeServer = null;
 let isQuitting = false;
 let activeAbort = null;
 let autoSyncTimer = null;
+let isSpeakingNow = false;
 let currentSphere = { state: 'idle', label: 'Готов к работе', female: false };
 
 function renderTrayIcon(female) {
@@ -73,9 +77,7 @@ function emitDriveStatus(msg) {
 
 function canAutoSyncDrive() {
   if (!store) return false;
-  const s = store.state;
-  const hasToken = Boolean(store.decrypt(s.googleTokensEnc?.access) || store.decrypt(s.googleTokensEnc?.refresh));
-  return hasToken && s.driveAutoSync !== false;
+  return store.state.driveAutoSync !== false && storage.isBackendConfigured(store);
 }
 
 function scheduleDriveStateSync() {
@@ -83,28 +85,49 @@ function scheduleDriveStateSync() {
   if (autoSyncTimer) clearTimeout(autoSyncTimer);
   autoSyncTimer = setTimeout(async () => {
     try {
-      emitDriveStatus(store.state.lang === 'en' ? 'Syncing to Google Drive…' : 'Сохраняю на Google Диск…');
-      await auth.syncStateOnlyToDrive(store);
-      emitDriveStatus(store.state.lang === 'en' ? 'Synced to Google Drive' : 'Сохранено на Google Диск');
-    } catch (err) {
-      emitDriveStatus('Drive: ' + err.message);
-    }
+      emitDriveStatus(store.state.lang === 'en' ? 'Syncing to cloud storage…' : 'Сохраняю в хранилище…');
+      const pass = store.decrypt(store.state.drivePassphraseEnc);
+      const vaultBuf = auth.buildEncryptedVaultBuffer(store, pass, false);
+      await storage.uploadStateVaultOnly(store, auth, vaultBuf);
+      emitDriveStatus(store.state.lang === 'en' ? 'Synced to cloud storage' : 'Сохранено в хранилище');
+    } catch (err) { emitDriveStatus('Storage: ' + err.message); }
   }, 3500);
 }
 
 function autoUploadFileToDrive(filePath, category, mimeType) {
   if (!canAutoSyncDrive() || !filePath || !fs.existsSync(filePath)) return;
   const base = path.basename(filePath);
-  emitDriveStatus(store.state.lang === 'en' ? `Uploading ${base} to Google Drive…` : `Загружаю ${base} на Google Диск…`);
-  auth.uploadSingleFileToDrive(store, filePath, category, mimeType)
-    .then(() => emitDriveStatus(store.state.lang === 'en' ? `Saved ${base} to Google Drive` : `Файл ${base} сохранён на Google Диск`))
-    .catch(err => emitDriveStatus('Drive upload: ' + err.message));
+  emitDriveStatus(store.state.lang === 'en' ? `Uploading ${base}…` : `Загружаю ${base}…`);
+  storage.uploadSingleFile(store, auth, filePath, category, mimeType)
+    .then(() => emitDriveStatus(store.state.lang === 'en' ? `Saved ${base}` : `Файл ${base} сохранён`))
+    .catch(err => emitDriveStatus('Storage upload: ' + err.message));
 }
 
 function autoUploadArtifactToDrive(art) {
   if (!canAutoSyncDrive() || !art) return;
-  auth.uploadSingleArtifactToDrive(store, art)
-    .catch(err => emitDriveStatus('Drive artifact: ' + err.message));
+  storage.uploadSingleArtifact(store, auth, art).catch(err => emitDriveStatus('Storage artifact: ' + err.message));
+}
+
+async function refreshAllModelsFromApis(onlyProvider = null) {
+  if (!store) return { updated: 0 };
+  const keys = store.getAllApiKeys(), customUrl = store.state.customBaseUrl || '';
+  const providers = onlyProvider ? [onlyProvider] : constants.PROVIDERS;
+  let updated = 0;
+  await Promise.all(providers.map(async (p) => {
+    if (!constants.isProviderReady(p, keys, customUrl)) return;
+    try {
+      const list = await llm.fetchModels(p, keys[p] || '', customUrl);
+      if (list && list.length) { store.state.modelCatalog[p] = list; updated++; }
+    } catch (_) {}
+  }));
+  if (updated > 0 || !onlyProvider) { store.state.lastModelsRefreshAt = Date.now(); store.save(); broadcastState(); }
+  return { updated, state: store.publicSnapshot() };
+}
+
+function scheduleAutoModelRefresh(onlyProvider = null) {
+  if (!store || store.state.autoRefreshModels === false) return;
+  if (modelRefreshTimer) clearTimeout(modelRefreshTimer);
+  modelRefreshTimer = setTimeout(() => { refreshAllModelsFromApis(onlyProvider).catch(() => {}); }, 700);
 }
 
 function broadcastState() {
@@ -121,12 +144,13 @@ function broadcastState() {
   rebuildMenus();
 }
 
-function broadcastSphere(state, label) {
+function broadcastSphere(state, label, transcript) {
   const fem = store.state.voice === 'f';
   const defaultReady = store.state.lang === 'en' ? 'Ready' : (fem ? 'Готова к работе' : 'Готов к работе');
   currentSphere = {
     state: state || 'idle',
     label: label !== undefined ? label : defaultReady,
+    transcript: transcript !== undefined ? String(transcript || '') : (state === 'idle' ? '' : (currentSphere.transcript || '')),
     female: fem
   };
   if (companionWin && !companionWin.isDestroyed()) {
@@ -164,7 +188,8 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      backgroundThrottling: false
     }
   });
   mainWin.loadFile(path.join(__dirname, 'renderer', 'app.html'));
@@ -185,8 +210,8 @@ function createCompanionWindow() {
   const y = saved && Number.isFinite(saved.y) ? Math.max(0, Math.min(saved.y, height - 290)) : height - 300;
 
   companionWin = new BrowserWindow({
-    width: 240,
-    height: 290,
+    width: 268,
+    height: 332,
     x,
     y,
     transparent: true,
@@ -249,8 +274,11 @@ function launchNexCodeTerminal() {
   }
 
   const terminals = [
-    ['x-terminal-emulator', ['-e', `sh -c '${cmd}; exec sh'`]],
+    ['ptyxis', ['--', 'sh', '-c', `${cmd}; exec sh`]],
     ['gnome-terminal', ['--', 'sh', '-c', `${cmd}; exec sh`]],
+    ['x-terminal-emulator', ['-e', `sh -c '${cmd}; exec sh'`]],
+    ['alacritty', ['-e', 'sh', '-c', `${cmd}; exec sh`]],
+    ['kitty', ['sh', '-c', `${cmd}; exec sh`]],
     ['konsole', ['-e', 'sh', '-c', `${cmd}; exec sh`]],
     ['xfce4-terminal', ['-e', `sh -c '${cmd}; exec sh'`]],
     ['xterm', ['-e', `sh -c '${cmd}; exec sh'`]]
@@ -329,12 +357,22 @@ function rebuildMenus() {
   Menu.setApplicationMenu(appMenu);
 }
 
+function isFreshEmptyChat(c) {
+  if (!c) return false;
+  return !(c.messages || []).some(m => m.role === 'user' || m.media || m.artifactId);
+}
+
 function createNewChat(projectId) {
   const s = store.state;
-  const isEn = s.lang === 'en';
-  const fem = s.voice === 'f';
+  const targetProjId = projectId || null;
+  const current = s.chats.find(c => c.id === s.activeChatId);
+  if (current && (current.projectId || null) === targetProjId && isFreshEmptyChat(current)) { broadcastState(); return current; }
+  const existingEmpty = s.chats.find(c => (c.projectId || null) === targetProjId && isFreshEmptyChat(c));
+  if (existingEmpty) { s.activeChatId = existingEmpty.id; store.save(); broadcastState(); return existingEmpty; }
+
+  const isEn = s.lang === 'en', fem = s.voice === 'f';
   const name = isEn ? (fem ? 'Nexi' : 'Nex') : (fem ? 'Некси' : 'Некс');
-  const proj = projectId ? s.projects.find(p => p.id === projectId) : null;
+  const proj = targetProjId ? s.projects.find(p => p.id === targetProjId) : null;
   const greeting = proj
     ? (proj.folderPath
         ? (isEn ? `Project "${proj.name}" opened. Working folder: ${proj.folderPath}.` : `Проект «${proj.name}» открыт. Рабочая папка: ${proj.folderPath}.`)
@@ -420,6 +458,7 @@ function registerIpc() {
   ipcMain.handle('nex:getBootstrap', () => ({
     constants: {
       PROVIDERS: constants.PROVIDERS,
+      PROVIDER_META: constants.PROVIDER_META,
       DEFAULT_MODELS: constants.DEFAULT_MODELS,
       IMAGE_MODELS: constants.IMAGE_MODELS,
       VIDEO_MODELS: constants.VIDEO_MODELS,
@@ -443,7 +482,7 @@ function registerIpc() {
       'lang', 'voice', 'speechRate', 'autoSpeak', 'wakeWordEnabled', 'userName',
       'showCompanion', 'selectedProfileId', 'manualProvider', 'manualModel',
       'imageModel', 'videoModel', 'lastGenMode', 'effort', 'webSearchEnabled',
-      'memoryEnabled', 'memoryAutoSave', 'confirmSensitiveActions', 'permissions', 'driveAutoSync', 'driveFolderMode'
+      'memoryEnabled', 'memoryAutoSave', 'confirmSensitiveActions', 'permissions', 'driveAutoSync', 'driveFolderMode', 'customBaseUrl', 'autoRefreshModels', 'autoFailover'
     ];
     for (const key of allowed) {
       if (Object.prototype.hasOwnProperty.call(patch, key)) {
@@ -466,6 +505,7 @@ function registerIpc() {
     }
     store.save();
     broadcastState();
+    if (Object.prototype.hasOwnProperty.call(patch, 'customBaseUrl')) { llm.clearProviderCooldown('Custom'); scheduleAutoModelRefresh('Custom'); }
     scheduleDriveStateSync();
     return store.publicSnapshot();
   });
@@ -809,6 +849,7 @@ function registerIpc() {
     return await llm.transcribeAudio({
       geminiKey: keys.Gemini || '',
       openaiKey: keys.OpenAI || '',
+      groqKey: keys.Groq || '',
       geminiModels: store.state.modelCatalog?.Gemini || [],
       audioBase64,
       mimeType,
@@ -817,8 +858,27 @@ function registerIpc() {
     });
   });
 
-  ipcMain.handle('nex:setSphereVisual', (_e, { state, label }) => {
-    broadcastSphere(state, label);
+  ipcMain.handle('nex:setSphereVisual', (_e, { state, label, transcript }) => {
+    broadcastSphere(state, label, transcript);
+    return { ok: true };
+  });
+
+  ipcMain.handle('nex:stopSpeaking', () => {
+    isSpeakingNow = false;
+    tts.stopNativeSpeech();
+    if (mainWin && !mainWin.isDestroyed()) {
+      mainWin.webContents.send('nex:stopSpeaking');
+      mainWin.webContents.send('nex:speakingState', false);
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle('nex:speechFinished', () => {
+    isSpeakingNow = false;
+    if (mainWin && !mainWin.isDestroyed()) {
+      mainWin.webContents.send('nex:speakingState', false);
+    }
+    if (!activeAbort) broadcastSphere('idle', undefined, '');
     return { ok: true };
   });
 
@@ -834,7 +894,42 @@ function registerIpc() {
     return { ok: true };
   });
 
-  ipcMain.handle('nex:sendMessage', async (_e, { text, attachments, genMode }) => {
+  async function speakReplyIfNeeded(replyText, shouldSpeak) {
+    if (!shouldSpeak || !replyText) return;
+    const s = store.state;
+    const isEn = s.lang === 'en';
+    isSpeakingNow = true;
+    broadcastSphere('speaking', isEn ? 'Speaking…' : 'Отвечаю…', '');
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('nex:speakingState', true);
+    try {
+      const keys = store.getAllApiKeys();
+      const ttsRes = await tts.synthesizeOrSpeak({
+        text: replyText,
+        lang: s.lang,
+        voice: s.voice,
+        rate: s.speechRate,
+        geminiKey: keys.Gemini || '',
+        openaiKey: keys.OpenAI || ''
+      });
+      if (ttsRes.mode === 'audio' || ttsRes.mode === 'webspeech') {
+        if (mainWin && !mainWin.isDestroyed()) {
+          mainWin.webContents.send('nex:speakPayload', {
+            ...ttsRes,
+            lang: s.lang,
+            voice: s.voice,
+            rate: s.speechRate
+          });
+          return; // renderer will call nex:speechFinished when playback ends
+        }
+      }
+    } catch (_) {
+    }
+    isSpeakingNow = false;
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('nex:speakingState', false);
+    broadcastSphere('idle', undefined, '');
+  }
+
+  ipcMain.handle('nex:sendMessage', async (_e, { text, attachments, genMode, fromVoice }) => {
     const s = store.state;
     const isEn = s.lang === 'en';
     const cleanText = String(text || '').trim();
@@ -972,10 +1067,8 @@ function registerIpc() {
       store.save();
       broadcastState();
 
-      broadcastSphere('speaking', isEn ? 'Replying…' : 'Отвечаю…');
-      if (s.autoSpeak && mainWin && !mainWin.isDestroyed()) {
-        mainWin.webContents.send('nex:speakText', { text: finalReply, lang: s.lang, voice: s.voice, rate: s.speechRate });
-      }
+      const shouldSpeak = Boolean(fromVoice || s.autoSpeak);
+      await speakReplyIfNeeded(finalReply, shouldSpeak);
       return { ok: true };
     } catch (err) {
       const textMsg = err?.name === 'AbortError'
@@ -987,7 +1080,7 @@ function registerIpc() {
       return { ok: false, error: textMsg };
     } finally {
       activeAbort = null;
-      broadcastSphere('idle');
+      if (!isSpeakingNow) broadcastSphere('idle', undefined, '');
       scheduleDriveStateSync();
     }
   });
@@ -1096,12 +1189,62 @@ function registerIpc() {
     store.save();
   });
   ipcMain.handle('nex:openNexCode', () => { launchNexCodeTerminal(); return { ok: true }; });
+
+  const broadcastNexCode = (snap) => { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('nex:nexCodeUpdate', snap); };
+  ipcMain.handle('nex:nexCodeGet', () => nexCodeMgr.snapshot());
+  ipcMain.handle('nex:nexCodeNew', () => { nexCodeMgr.createSession(nexCodeMgr.getActiveSession()?.cwd); const s = nexCodeMgr.snapshot(); broadcastNexCode(s); return s; });
+  ipcMain.handle('nex:nexCodeOpen', (_e, id) => { if (nexCodeMgr.loadSession(id)) nexCodeMgr.activeSessionId = id; const s = nexCodeMgr.snapshot(); broadcastNexCode(s); return s; });
+  ipcMain.handle('nex:nexCodeDelete', (_e, id) => { nexCodeMgr.deleteSession(id); const s = nexCodeMgr.snapshot(); broadcastNexCode(s); return s; });
+  ipcMain.handle('nex:nexCodePickFolder', async () => { const r = await dialog.showOpenDialog(mainWin, { properties: ['openDirectory'] }); if (!r.canceled && r.filePaths.length) nexCodeMgr.setCwd(r.filePaths[0]); const s = nexCodeMgr.snapshot(); broadcastNexCode(s); return s; });
+  ipcMain.handle('nex:nexCodeToggleAuto', (_e, enabled) => { nexCodeMgr.autoApprove = Boolean(enabled); const s = nexCodeMgr.snapshot(); broadcastNexCode(s); return s; });
+  ipcMain.handle('nex:nexCodeCancel', () => { nexCodeMgr.cancel(); const s = nexCodeMgr.snapshot(); broadcastNexCode(s); return s; });
+  ipcMain.handle('nex:nexCodeSend', async (_e, prompt) => {
+    const target = resolveTextTarget();
+    if (!target) return { ok: false, error: store.state.lang === 'en' ? 'Add an API key in Settings -> AI first.' : 'Сначала добавь API-ключ в Настройках → ИИ.' };
+    return await nexCodeMgr.sendTask({ prompt, store, target: { provider: target.provider, model: target.model, apiKey: store.getApiKey(target.provider) }, effort: store.state.effort, lang: store.state.lang, safety, onUpdate: broadcastNexCode, onSphere: (st, lbl, tr) => broadcastSphere(st, lbl, tr) });
+  });
+
+  ipcMain.handle('nex:storageGetStats', () => storage.getStorageStats(store, nexCodeMgr.sessionsDir));
+  ipcMain.handle('nex:storageSaveConfig', (_e, patch) => {
+    const cur = store.state.storageConfig || { backend: 'webdav', webdav: { url: '', username: '', passwordEnc: '', rootFolder: 'Nex' }, s3: { endpoint: '', region: 'auto', bucket: '', accessKeyId: '', secretAccessKeyEnc: '', prefix: 'Nex' }, localFolder: '' };
+    if (patch.backend) cur.backend = String(patch.backend);
+    if (patch.webdav) {
+      cur.webdav = cur.webdav || {};
+      if (patch.webdav.url !== undefined) cur.webdav.url = String(patch.webdav.url).trim();
+      if (patch.webdav.username !== undefined) cur.webdav.username = String(patch.webdav.username).trim();
+      if (patch.webdav.rootFolder !== undefined) cur.webdav.rootFolder = String(patch.webdav.rootFolder).trim() || 'Nex';
+      if (patch.webdav.password) cur.webdav.passwordEnc = store.encrypt(String(patch.webdav.password).trim());
+    }
+    if (patch.s3) {
+      cur.s3 = cur.s3 || {};
+      if (patch.s3.endpoint !== undefined) cur.s3.endpoint = String(patch.s3.endpoint).trim();
+      if (patch.s3.region !== undefined) cur.s3.region = String(patch.s3.region).trim() || 'auto';
+      if (patch.s3.bucket !== undefined) cur.s3.bucket = String(patch.s3.bucket).trim();
+      if (patch.s3.accessKeyId !== undefined) cur.s3.accessKeyId = String(patch.s3.accessKeyId).trim();
+      if (patch.s3.prefix !== undefined) cur.s3.prefix = String(patch.s3.prefix).trim() || 'Nex';
+      if (patch.s3.secretAccessKey) cur.s3.secretAccessKeyEnc = store.encrypt(String(patch.s3.secretAccessKey).trim());
+    }
+    if (patch.localFolder !== undefined) cur.localFolder = String(patch.localFolder).trim();
+    store.state.storageConfig = cur; store.save(); broadcastState();
+    return { ok: true, state: store.publicSnapshot() };
+  });
+  ipcMain.handle('nex:storagePickLocalFolder', async () => {
+    const res = await dialog.showOpenDialog(mainWin, { properties: ['openDirectory', 'createDirectory'] });
+    if (res.canceled || !res.filePaths.length) return { canceled: true };
+    store.state.storageConfig = store.state.storageConfig || {}; store.state.storageConfig.backend = 'local_folder'; store.state.storageConfig.localFolder = res.filePaths[0];
+    store.save(); broadcastState();
+    return { ok: true, folder: res.filePaths[0] };
+  });
+  ipcMain.handle('nex:storageTest', async () => { try { return { ok: true, message: await storage.testConnection(store, auth) }; } catch (err) { return { ok: false, error: err.message }; } });
+  ipcMain.handle('nex:storagePushAll', async (_e, passphrase) => { try { if (passphrase) { store.state.drivePassphraseEnc = store.encrypt(String(passphrase).trim()); store.save(); } const report = await storage.pushAll({ store, authModule: auth, passphrase, onProgress: (p) => emitDriveStatus(p) }); broadcastState(); return { ok: true, report }; } catch (err) { return { ok: false, error: err.message }; } });
+  ipcMain.handle('nex:storagePullAll', async (_e, passphrase) => { try { if (passphrase) { store.state.drivePassphraseEnc = store.encrypt(String(passphrase).trim()); store.save(); } const res = await storage.pullAll({ store, authModule: auth, passphrase, onProgress: (p) => emitDriveStatus(p) }); broadcastState(); return { ok: true, state: res.state, report: res.report }; } catch (err) { return { ok: false, error: err.message }; } });
 }
 
 app.setName('Nex');
 
 app.whenReady().then(() => {
   store = new NexStore(app.getPath('userData'), safeStorage);
+  nexCodeMgr = new DesktopNexCodeManager(app.getPath('userData'));
   safety = new SafetyGuard((pending) => broadcastConfirmation(pending));
   registerIpc();
 
@@ -1116,6 +1259,11 @@ app.whenReady().then(() => {
   createMainWindow();
   rebuildMenus();
   startLocalBridge();
+  const SIX_HOURS = 6 * 60 * 60 * 1000;
+  if (store.state.autoRefreshModels !== false && (Date.now() - (store.state.lastModelsRefreshAt || 0) > SIX_HOURS)) {
+    setTimeout(() => refreshAllModelsFromApis(null).catch(() => {}), 2500);
+  }
+  setInterval(() => { if (store && store.state.autoRefreshModels !== false) refreshAllModelsFromApis(null).catch(() => {}); }, SIX_HOURS);
 
   globalShortcut.register('CommandOrControl+Alt+N', toggleCompanion);
   globalShortcut.register('CommandOrControl+Shift+N', () => createMainWindow());

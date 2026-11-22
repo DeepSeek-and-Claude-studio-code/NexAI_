@@ -140,6 +140,22 @@ class Store(private val ctx: Context) {
         get() = accountSp().getBoolean("wake_word_enabled", false)
         set(v) { accountSp().edit().putBoolean("wake_word_enabled", v).apply() }
 
+    var customBaseUrl: String
+        get() = accountSp().getString("custom_base_url", "") ?: ""
+        set(v) { accountSp().edit().putString("custom_base_url", v.trim()).apply() }
+
+    var autoRefreshModels: Boolean
+        get() = accountSp().getBoolean("auto_refresh_models", true)
+        set(v) { accountSp().edit().putBoolean("auto_refresh_models", v).apply() }
+
+    var autoFailover: Boolean
+        get() = accountSp().getBoolean("auto_failover", true)
+        set(v) { accountSp().edit().putBoolean("auto_failover", v).apply() }
+
+    var lastModelsRefreshAt: Long
+        get() = accountSp().getLong("last_models_refresh_at", 0L)
+        set(v) { accountSp().edit().putLong("last_models_refresh_at", v).apply() }
+
     var userName: String
         get() = accountSp().getString("user_name", "") ?: ""
         set(v) { accountSp().edit().putString("user_name", v).apply() }
@@ -203,6 +219,39 @@ class Store(private val ctx: Context) {
 
     fun getAllApiKeys(): Map<String, String> =
         LlmClient.PROVIDERS.associateWith { getApiKey(it) }
+
+    fun loadStorageConfig(): StorageConfig {
+        val sp = accountSp()
+        return StorageConfig(
+            backend = sp.getString("storage_backend", "webdav") ?: "webdav",
+            webdavUrl = sp.getString("storage_webdav_url", "") ?: "",
+            webdavUser = sp.getString("storage_webdav_user", "") ?: "",
+            webdavPassword = sp.getString("storage_webdav_pass", "") ?: "",
+            webdavRoot = sp.getString("storage_webdav_root", "Nex") ?: "Nex",
+            s3Endpoint = sp.getString("storage_s3_endpoint", "") ?: "",
+            s3Region = sp.getString("storage_s3_region", "auto") ?: "auto",
+            s3Bucket = sp.getString("storage_s3_bucket", "") ?: "",
+            s3AccessKeyId = sp.getString("storage_s3_access_key", "") ?: "",
+            s3SecretAccessKey = sp.getString("storage_s3_secret_key", "") ?: "",
+            s3Prefix = sp.getString("storage_s3_prefix", "Nex") ?: "Nex"
+        )
+    }
+
+    fun saveStorageConfig(cfg: StorageConfig) {
+        accountSp().edit()
+            .putString("storage_backend", cfg.backend)
+            .putString("storage_webdav_url", cfg.webdavUrl.trim())
+            .putString("storage_webdav_user", cfg.webdavUser.trim())
+            .putString("storage_webdav_pass", cfg.webdavPassword)
+            .putString("storage_webdav_root", cfg.webdavRoot.ifBlank { "Nex" })
+            .putString("storage_s3_endpoint", cfg.s3Endpoint.trim())
+            .putString("storage_s3_region", cfg.s3Region.ifBlank { "auto" })
+            .putString("storage_s3_bucket", cfg.s3Bucket.trim())
+            .putString("storage_s3_access_key", cfg.s3AccessKeyId.trim())
+            .putString("storage_s3_secret_key", cfg.s3SecretAccessKey)
+            .putString("storage_s3_prefix", cfg.s3Prefix.ifBlank { "Nex" })
+            .apply()
+    }
 
     fun loadMailConfig(): MailConfig {
         val sp = accountSp()

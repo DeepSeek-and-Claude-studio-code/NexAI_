@@ -172,6 +172,9 @@ async function runAgentTurn({
   onStatus,
   signal
 }) {
+  let activeProvider = provider;
+  let activeModel = model;
+  let failoverNotice = '';
   const s = store.state;
   const isEn = s.lang === 'en';
   const fem = s.voice === 'f';
@@ -224,7 +227,7 @@ async function runAgentTurn({
       };
     }
 
-    working.push({ role: 'assistant', text: resp.text, toolCalls: resp.toolCalls });
+    working.push({ role: 'assistant', text: resp.text, toolCalls: resp.toolCalls, rawParts: resp.rawParts || null });
 
     for (const call of resp.toolCalls) {
       const resultText = await executeTool({

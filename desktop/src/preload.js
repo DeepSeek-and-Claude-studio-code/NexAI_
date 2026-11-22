@@ -33,7 +33,9 @@ contextBridge.exposeInMainWorld('nexApi', {
   sendMessage: (payload) => ipcRenderer.invoke('nex:sendMessage', payload),
   cancelGeneration: () => ipcRenderer.invoke('nex:cancelGeneration'),
   transcribeAudio: (payload) => ipcRenderer.invoke('nex:transcribeAudio', payload),
-  setSphereVisual: (state, label) => ipcRenderer.invoke('nex:setSphereVisual', { state, label }),
+  setSphereVisual: (state, label, transcript) => ipcRenderer.invoke('nex:setSphereVisual', { state, label, transcript: transcript || '' }),
+  stopSpeaking: () => ipcRenderer.invoke('nex:stopSpeaking'),
+  speechFinished: () => ipcRenderer.invoke('nex:speechFinished'),
   resolveConfirmation: (approved) => ipcRenderer.invoke('nex:resolveConfirmation', approved),
 
   // Memory
@@ -61,10 +63,28 @@ contextBridge.exposeInMainWorld('nexApi', {
   showCompanionMenu: () => ipcRenderer.invoke('nex:showCompanionMenu'),
   moveCompanionBy: (dx, dy) => ipcRenderer.send('nex:moveCompanionBy', { dx, dy }),
   openNexCode: () => ipcRenderer.invoke('nex:openNexCode'),
+  nexCodeGet: () => ipcRenderer.invoke('nex:nexCodeGet'),
+  nexCodeNew: () => ipcRenderer.invoke('nex:nexCodeNew'),
+  nexCodeOpen: (id) => ipcRenderer.invoke('nex:nexCodeOpen', id),
+  nexCodeDelete: (id) => ipcRenderer.invoke('nex:nexCodeDelete', id),
+  nexCodePickFolder: () => ipcRenderer.invoke('nex:nexCodePickFolder'),
+  nexCodeToggleAuto: (enabled) => ipcRenderer.invoke('nex:nexCodeToggleAuto', enabled),
+  nexCodeSend: (prompt) => ipcRenderer.invoke('nex:nexCodeSend', prompt),
+  nexCodeCancel: () => ipcRenderer.invoke('nex:nexCodeCancel'),
+  storageGetStats: () => ipcRenderer.invoke('nex:storageGetStats'),
+  storageSaveConfig: (patch) => ipcRenderer.invoke('nex:storageSaveConfig', patch),
+  storagePickLocalFolder: () => ipcRenderer.invoke('nex:storagePickLocalFolder'),
+  storageTest: () => ipcRenderer.invoke('nex:storageTest'),
+  storagePushAll: (passphrase) => ipcRenderer.invoke('nex:storagePushAll', passphrase),
+  storagePullAll: (passphrase) => ipcRenderer.invoke('nex:storagePullAll', passphrase),
 
   onStateChanged: (cb) => ipcRenderer.on('nex:stateChanged', (_e, data) => cb(data)),
   onSphereState: (cb) => ipcRenderer.on('nex:sphereState', (_e, data) => cb(data)),
   onConfirmation: (cb) => ipcRenderer.on('nex:confirmation', (_e, data) => cb(data)),
   onSpeakText: (cb) => ipcRenderer.on('nex:speakText', (_e, data) => cb(data)),
-  onDriveStatus: (cb) => ipcRenderer.on('nex:driveStatus', (_e, msg) => cb(msg))
+  onSpeakPayload: (cb) => ipcRenderer.on('nex:speakPayload', (_e, data) => cb(data)),
+  onSpeakingState: (cb) => ipcRenderer.on('nex:speakingState', (_e, speaking) => cb(Boolean(speaking))),
+  onStopSpeaking: (cb) => ipcRenderer.on('nex:stopSpeaking', () => cb()),
+  onDriveStatus: (cb) => ipcRenderer.on('nex:driveStatus', (_e, msg) => cb(msg)),
+  onNexCodeUpdate: (cb) => ipcRenderer.on('nex:nexCodeUpdate', (_e, snap) => cb(snap))
 });

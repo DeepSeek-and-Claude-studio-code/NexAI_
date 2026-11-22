@@ -30,6 +30,16 @@ function createDefaultAccountState() {
     driveAutoSync: true,
     driveFolderMode: 'visible',
     drivePassphraseEnc: '',
+    customBaseUrl: '',
+    autoRefreshModels: true,
+    autoFailover: true,
+    lastModelsRefreshAt: 0,
+    storageConfig: {
+      backend: 'webdav',
+      webdav: { url: '', username: '', passwordEnc: '', rootFolder: 'Nex' },
+      s3: { endpoint: '', region: 'auto', bucket: '', accessKeyId: '', secretAccessKeyEnc: '', prefix: 'Nex' },
+      localFolder: ''
+    },
     permissions: {
       files: true,
       shell: true,
@@ -311,6 +321,16 @@ class NexStore {
         driveAutoSync: s.driveAutoSync !== false,
         driveFolderMode: s.driveFolderMode || 'visible',
         hasDrivePassphrase: Boolean(s.drivePassphraseEnc)
+      },
+      customBaseUrl: s.customBaseUrl || '',
+      autoRefreshModels: s.autoRefreshModels !== false,
+      autoFailover: s.autoFailover !== false,
+      lastModelsRefreshAt: s.lastModelsRefreshAt || 0,
+      storageConfig: {
+        backend: s.storageConfig?.backend || 'webdav',
+        webdav: { url: s.storageConfig?.webdav?.url || '', username: s.storageConfig?.webdav?.username || '', hasPassword: Boolean(s.storageConfig?.webdav?.passwordEnc), rootFolder: s.storageConfig?.webdav?.rootFolder || 'Nex' },
+        s3: { endpoint: s.storageConfig?.s3?.endpoint || '', region: s.storageConfig?.s3?.region || 'auto', bucket: s.storageConfig?.s3?.bucket || '', accessKeyId: s.storageConfig?.s3?.accessKeyId || '', hasSecret: Boolean(s.storageConfig?.s3?.secretAccessKeyEnc), prefix: s.storageConfig?.s3?.prefix || 'Nex' },
+        localFolder: s.storageConfig?.localFolder || ''
       },
       lang: s.lang,
       voice: s.voice,

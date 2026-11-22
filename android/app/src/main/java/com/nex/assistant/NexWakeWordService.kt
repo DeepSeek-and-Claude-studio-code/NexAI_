@@ -22,18 +22,23 @@ import android.speech.SpeechRecognizer
 import androidx.core.app.NotificationCompat
 
 /**
- * Background Foreground Service that continuously listens for the wake word
- * ("Некс" / "Некси" / "Nex" / "Nexi") using on-device SpeechRecognizer (prefer offline)
- * and triggers Nex voice command capture when heard.
+ * Foreground Service continuously listening for "Некс" / "Некси" / "Nex" / "Nexi".
+ * - Detects wake word in real time on onPartialResults (no lag).
+ * - Immediately sets status to "Слушает…" and streams spoken words below the status.
+ * - Detects end-of-speech pause (1.45s) and immediately dispatches the command with automatic voice reply.
  */
 class NexWakeWordService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
     private var running = false
     private var restartRunnable: Runnable? = null
+    private var endpointRunnable: Runnable? = null
+
+    private var wakeTriggeredInCycle = false
+    private var latestTrailingCommand = ""
 
     private val wakeRegex = Regex(
-        pattern = "(?:^|[\\s,.!?])(некс[ауеи]?|нэкс[ауеи]?|nexi?|next)(?:[\\s,.!?]+(.*))?$",
+        pattern = "(?:^|[\\s,.!?;:—–-])(некс[ауеи]?|нэкс[ауеи]?|nexi?|некст|next)(?:[\\s,.!?;:—–-]+(.*))?$",
         option = RegexOption.IGNORE_CASE
     )
 
@@ -66,8 +71,14 @@ class NexWakeWordService : Service() {
     override fun onDestroy() {
         running = false
         restartRunnable?.let { handler.removeCallbacks(it) }
+        cancelEndpointTimer()
         destroyRecognizer()
         super.onDestroy()
+    }
+
+    private fun cancelEndpointTimer() {
+        endpointRunnable?.let { handler.removeCallbacks(it) }
+        endpointRunnable = null
     }
 
     private fun scheduleListen(delayMs: Long) {
@@ -85,9 +96,9 @@ class NexWakeWordService : Service() {
             stopSelf()
             return
         }
-        // Pause wake-word loop while user is actively talking or agent is busy
-        if (ctrl.isBusy || ctrl.isListening) {
-            scheduleListen(1500L)
+        // Pause wake-word loop while user is actively talking, agent is working, or Nex is speaking its answer
+        if (ctrl.isBusy || ctrl.isListening || ctrl.isSpeaking) {
+            scheduleListen(1200L)
             return
         }
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
@@ -96,6 +107,10 @@ class NexWakeWordService : Service() {
         }
 
         destroyRecognizer()
+        cancelEndpointTimer()
+        wakeTriggeredInCycle = false
+        latestTrailingCommand = ""
+
         val sr = SpeechRecognizer.createSpeechRecognizer(this)
         recognizer = sr
         sr.setRecognitionListener(object : RecognitionListener {
@@ -106,19 +121,48 @@ class NexWakeWordService : Service() {
             override fun onEndOfSpeech() {}
 
             override fun onError(error: Int) {
-                val backoff = if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 1200L else 600L
+                cancelEndpointTimer()
+                if (wakeTriggeredInCycle) {
+                    finalizeAfterWakeWord(ctrl, latestTrailingCommand)
+                    return
+                }
+                val backoff = if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 1200L else 550L
                 scheduleListen(backoff)
             }
 
             override fun onPartialResults(partialResults: Bundle?) {
                 val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     ?.firstOrNull().orEmpty().trim()
-                if (text.isNotEmpty() && wakeRegex.containsMatchIn(text)) {
-                    // Wait for final result so we capture any inline command spoken right after "Некс"
+                if (text.isEmpty()) return
+
+                val m = wakeRegex.find(text)
+                if (m != null) {
+                    val trailing = m.groupValues.getOrNull(2)?.trim().orEmpty()
+                    if (!wakeTriggeredInCycle) {
+                        wakeTriggeredInCycle = true
+                        playChime()
+                        ctrl.onWakeWordActivated(trailing)
+                        launchAssistOverlay(alreadyListening = true)
+                    } else if (trailing != latestTrailingCommand) {
+                        ctrl.updateLiveTranscript(trailing)
+                    }
+                    latestTrailingCommand = trailing
+
+                    // Smart end-of-speech pause detector: once user stops talking for 1.45s, execute immediately!
+                    cancelEndpointTimer()
+                    val delay = if (trailing.isNotBlank()) 1450L else 1800L
+                    val r = Runnable {
+                        if (wakeTriggeredInCycle) {
+                            finalizeAfterWakeWord(ctrl, latestTrailingCommand)
+                        }
+                    }
+                    endpointRunnable = r
+                    handler.postDelayed(r, delay)
                 }
             }
 
             override fun onResults(results: Bundle?) {
+                cancelEndpointTimer()
                 val candidates = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
                 val matched = candidates.firstNotNullOfOrNull { phrase ->
                     val m = wakeRegex.find(phrase.trim())
@@ -126,7 +170,15 @@ class NexWakeWordService : Service() {
                 }
 
                 if (matched != null) {
-                    onWakeWordDetected(ctrl, matched)
+                    if (!wakeTriggeredInCycle) {
+                        wakeTriggeredInCycle = true
+                        playChime()
+                        ctrl.onWakeWordActivated(matched)
+                        launchAssistOverlay(alreadyListening = true)
+                    }
+                    finalizeAfterWakeWord(ctrl, matched.ifBlank { latestTrailingCommand })
+                } else if (wakeTriggeredInCycle) {
+                    finalizeAfterWakeWord(ctrl, latestTrailingCommand)
                 } else {
                     scheduleListen(350L)
                 }
@@ -142,42 +194,45 @@ class NexWakeWordService : Service() {
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1400L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1100L)
         }
         runCatching { sr.startListening(intent) }.onFailure { scheduleListen(1500L) }
     }
 
-    private fun onWakeWordDetected(ctrl: NexController, inlineCommand: String) {
+    private fun finalizeAfterWakeWord(ctrl: NexController, inlineCommand: String) {
+        wakeTriggeredInCycle = false
+        latestTrailingCommand = ""
+        cancelEndpointTimer()
         destroyRecognizer()
-        playChime()
 
-        if (inlineCommand.isNotBlank()) {
-            // User said e.g. "Некс, запиши встречу на 10 утра"
-            ctrl.sendUserMessage(inlineCommand, fromAssistOverlay = true)
-            launchAssistOverlay()
-            scheduleListen(3000L)
+        val cmd = inlineCommand.trim()
+        if (cmd.isNotBlank()) {
+            // User spoke "Некс, <command>" and paused -> execute right away and speak the answer!
+            ctrl.sendUserMessage(cmd, fromAssistOverlay = true, fromVoice = true)
+            scheduleListen(2500L)
         } else {
-            // User said just "Некс" -> open overlay and actively listen for the request
-            launchAssistOverlay()
+            // User said ONLY "Некс" -> keep status "Слушает…" and actively record the request
             handler.postDelayed({
                 ctrl.startVoiceInput(fromAssistOverlay = true)
-            }, 300L)
-            scheduleListen(3500L)
+            }, 180L)
+            scheduleListen(3000L)
         }
     }
 
-    private fun launchAssistOverlay() {
+    private fun launchAssistOverlay(alreadyListening: Boolean) {
         val intent = Intent(this, AssistActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(AssistActivity.EXTRA_ALREADY_LISTENING, alreadyListening)
         }
         runCatching { startActivity(intent) }
     }
 
     private fun playChime() {
         runCatching {
-            val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 70)
-            tg.startTone(ToneGenerator.TONE_PROP_BEEP, 130)
-            handler.postDelayed({ runCatching { tg.release() } }, 250L)
+            val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 75)
+            tg.startTone(ToneGenerator.TONE_PROP_BEEP, 120)
+            handler.postDelayed({ runCatching { tg.release() } }, 240L)
         }
     }
 

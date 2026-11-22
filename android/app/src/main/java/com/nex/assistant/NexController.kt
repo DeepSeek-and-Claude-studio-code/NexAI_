@@ -46,6 +46,11 @@ class NexController(private val ctx: Context) {
     var speechRate by mutableFloatStateOf(store.speechRate)
     var autoSpeak by mutableStateOf(store.autoSpeak)
     var wakeWordEnabled by mutableStateOf(store.wakeWordEnabled)
+    var customBaseUrl by mutableStateOf(store.customBaseUrl)
+    var autoRefreshModels by mutableStateOf(store.autoRefreshModels)
+    var autoFailover by mutableStateOf(store.autoFailover)
+    var storageConfig by mutableStateOf(store.loadStorageConfig())
+    var storageStats by mutableStateOf(StorageStats())
     var userName by mutableStateOf(store.userName)
 
     var selectedProfileId by mutableStateOf(store.selectedProfileId)
@@ -85,6 +90,8 @@ class NexController(private val ctx: Context) {
 
     var assistTranscript by mutableStateOf("")
     var assistReply by mutableStateOf("")
+    var liveTranscript by mutableStateOf("")
+    var isSpeaking by mutableStateOf(false)
 
     val female: Boolean get() = voice == "f"
     val agentName: String get() = Strings.agentName(lang, female)
@@ -101,6 +108,14 @@ class NexController(private val ctx: Context) {
         speechRate = store.speechRate
         autoSpeak = store.autoSpeak
         wakeWordEnabled = store.wakeWordEnabled
+        customBaseUrl = store.customBaseUrl
+        autoRefreshModels = store.autoRefreshModels
+        autoFailover = store.autoFailover
+        storageConfig = store.loadStorageConfig()
+        refreshStorageStats()
+        if (autoRefreshModels && System.currentTimeMillis() - store.lastModelsRefreshAt > 6 * 3600_000L) {
+            scope.launch { refreshModelsInternal(onlyProvider = null) }
+        }
         if (wakeWordEnabled && Perms.has(ctx, android.Manifest.permission.RECORD_AUDIO)) NexWakeWordService.start(ctx)
         userName = store.userName.ifBlank { account.displayName }
 
@@ -229,42 +244,97 @@ class NexController(private val ctx: Context) {
     }
 
     private fun canAutoSyncDrive(): Boolean =
-        account.driveConnected && store.driveAutoSync
+        store.driveAutoSync && UnifiedStorage.isConfigured(store)
+
+    fun refreshStorageStats() {
+        storageStats = UnifiedStorage.computeStats(store, currentPersistedState())
+    }
+
+    fun updateStorageConfig(cfg: StorageConfig) {
+        storageConfig = cfg
+        store.saveStorageConfig(cfg)
+    }
+
+    fun testUnifiedStorage(onDone: (String) -> Unit) {
+        scope.launch {
+            val res = UnifiedStorage.testConnection(store)
+            onDone(res.fold(onSuccess = { "✓ $it" }, onFailure = { "Error: ${it.message}" }))
+        }
+    }
+
+    fun syncAllToUnifiedStorage(passphrase: String, onDone: (String) -> Unit) {
+        scope.launch {
+            if (passphrase.isNotBlank()) updateDrivePassphrase(passphrase)
+            val res = UnifiedStorage.pushAll(store, currentPersistedState(), passphrase.ifBlank { drivePassphrase }) { p ->
+                driveSyncStatus = p
+            }
+            refreshStorageStats()
+            onDone(res.fold(
+                onSuccess = { r ->
+                    account = store.loadAccountProfile()
+                    if (lang == "en") "Saved (${r.backend}): uploaded ${r.uploadedFiles}, unchanged ${r.skippedFiles}."
+                    else "Сохранено (${r.backend}): загружено ${r.uploadedFiles}, без изменений ${r.skippedFiles}."
+                },
+                onFailure = { "Error: ${it.message}" }
+            ))
+        }
+    }
+
+    fun restoreAllFromUnifiedStorage(passphrase: String, onDone: (String) -> Unit) {
+        scope.launch {
+            if (passphrase.isNotBlank()) updateDrivePassphrase(passphrase)
+            val res = UnifiedStorage.pullAll(store, passphrase.ifBlank { drivePassphrase }) { p ->
+                driveSyncStatus = p
+            }
+            onDone(res.fold(
+                onSuccess = { (_, r) ->
+                    reloadFromActiveAccount()
+                    refreshStorageStats()
+                    if (lang == "en") "Restored (${r.backend}): downloaded ${r.downloadedFiles}, already local ${r.skippedFiles}."
+                    else "Загружено (${r.backend}): скачано ${r.downloadedFiles}, уже локально ${r.skippedFiles}."
+                },
+                onFailure = { "Error: ${it.message}" }
+            ))
+        }
+    }
 
     private fun scheduleDriveStateSync() {
+        refreshStorageStats()
         if (!canAutoSyncDrive()) return
         autoSyncJob?.cancel()
         autoSyncJob = scope.launch {
             delay(3500)
-            driveSyncStatus = if (lang == "en") "Syncing to Google Drive…" else "Сохраняю на Google Диск…"
-            val res = GoogleDriveStorage.uploadStateVaultOnly(store, currentPersistedState(), drivePassphrase)
+            driveSyncStatus = if (lang == "en") "Syncing to storage…" else "Сохраняю в хранилище…"
+            val res = UnifiedStorage.uploadStateVaultOnly(store, currentPersistedState(), drivePassphrase)
             driveSyncStatus = res.fold(
                 onSuccess = {
                     account = store.loadAccountProfile()
-                    if (lang == "en") "Synced to Google Drive" else "Сохранено на Google Диск"
+                    if (lang == "en") "Synced to storage" else "Сохранено в хранилище"
                 },
-                onFailure = { "Drive: ${it.message}" }
+                onFailure = { "Storage: ${it.message}" }
             )
         }
     }
 
     private fun autoUploadFileToDrive(file: File, category: String, mimeType: String) {
+        refreshStorageStats()
         if (!canAutoSyncDrive() || !file.exists()) return
         scope.launch {
-            driveSyncStatus = if (lang == "en") "Uploading ${file.name} to Google Drive…" else "Загружаю ${file.name} на Google Диск…"
-            val res = GoogleDriveStorage.uploadSingleLocalFile(store, file, category, mimeType)
+            driveSyncStatus = if (lang == "en") "Uploading ${file.name}…" else "Загружаю ${file.name}…"
+            val res = UnifiedStorage.uploadSingleLocalFile(store, file, category, mimeType)
             driveSyncStatus = res.fold(
-                onSuccess = { if (lang == "en") "Saved ${file.name} to Google Drive" else "Файл ${file.name} сохранён на Google Диск" },
-                onFailure = { "Drive upload: ${it.message}" }
+                onSuccess = { if (lang == "en") "Saved ${file.name}" else "Файл ${file.name} сохранён" },
+                onFailure = { "Storage upload: ${it.message}" }
             )
         }
     }
 
     private fun autoUploadArtifactToDrive(art: ArtifactItem) {
+        refreshStorageStats()
         if (!canAutoSyncDrive()) return
         scope.launch {
-            val res = GoogleDriveStorage.uploadSingleArtifact(store, art)
-            res.onFailure { driveSyncStatus = "Drive artifact: ${it.message}" }
+            val res = UnifiedStorage.uploadSingleArtifact(store, art)
+            res.onFailure { driveSyncStatus = "Storage artifact: ${it.message}" }
         }
     }
 
@@ -394,7 +464,31 @@ class NexController(private val ctx: Context) {
     fun updateApiKey(provider: String, value: String) {
         store.setApiKey(provider, value)
         apiKeys = store.getAllApiKeys()
+        LlmClient.clearCooldown(provider)
+        if (autoRefreshModels && value.isNotBlank()) {
+            scope.launch { refreshModelsInternal(onlyProvider = provider) }
+        }
         scheduleDriveStateSync()
+    }
+
+    fun updateCustomBaseUrl(url: String) {
+        customBaseUrl = url.trim()
+        store.customBaseUrl = customBaseUrl
+        LlmClient.clearCooldown("Custom")
+        if (autoRefreshModels && customBaseUrl.isNotBlank()) {
+            scope.launch { refreshModelsInternal(onlyProvider = "Custom") }
+        }
+        scheduleDriveStateSync()
+    }
+
+    fun updateAutoRefreshModels(enabled: Boolean) {
+        autoRefreshModels = enabled
+        store.autoRefreshModels = enabled
+    }
+
+    fun updateAutoFailover(enabled: Boolean) {
+        autoFailover = enabled
+        store.autoFailover = enabled
     }
 
     fun updateMailConfig(cfg: MailConfig) {
@@ -505,10 +599,10 @@ class NexController(private val ctx: Context) {
 
     fun resolveActiveTextTarget(): ModelTarget? {
         val prof = NexProfile.fromId(selectedProfileId)
-        if (prof != null && !prof.isMedia) return prof.resolveText(apiKeys)
-        if (prof != null && prof.isMedia) return NexProfile.QUARK.resolveText(apiKeys)
-        if (!apiKeys[manualProvider].isNullOrBlank()) return ModelTarget(manualProvider, manualModel)
-        return null
+        if (prof != null && !prof.isMedia) return prof.resolveText(apiKeys, customBaseUrl, modelCatalog)
+        if (prof != null && prof.isMedia) return NexProfile.QUARK.resolveText(apiKeys, customBaseUrl, modelCatalog)
+        if (LlmClient.isProviderReady(manualProvider, apiKeys, customBaseUrl)) return ModelTarget(manualProvider, manualModel)
+        return NexProfile.QUARK.resolveText(apiKeys, customBaseUrl, modelCatalog)
     }
 
     fun resolveActiveMediaTarget(mode: GenMode): ModelTarget? {
@@ -525,7 +619,22 @@ class NexController(private val ctx: Context) {
 
     // --- Chats, Projects, Artifacts & Media Studio ---
 
+    private fun isFreshEmptyChat(session: ChatSession): Boolean =
+        session.messages.none { it.role == "user" || it.media != null || it.artifactId != null }
+
     fun startNewChat(projectId: String? = null) {
+        val current = activeChat()
+        if (current != null && current.projectId == projectId && isFreshEmptyChat(current)) {
+            screen = AppScreen.CHAT
+            return
+        }
+        val existingEmpty = chats.firstOrNull { it.projectId == projectId && isFreshEmptyChat(it) }
+        if (existingEmpty != null) {
+            activeChatId = existingEmpty.id
+            screen = AppScreen.CHAT
+            persist()
+            return
+        }
         val proj = projectId?.let { id -> projects.firstOrNull { it.id == id } }
         val greeting = if (proj != null) {
             val fInfo = if (proj.folderName != null) {
@@ -808,21 +917,29 @@ class NexController(private val ctx: Context) {
         pendingAttachments.removeAll { it.id == id }
     }
 
+    private suspend fun refreshModelsInternal(onlyProvider: String?): Int {
+        val updated = modelCatalog.toMutableMap()
+        val listToCheck = if (onlyProvider != null) listOf(onlyProvider) else LlmClient.PROVIDERS
+        var count = 0
+        for (p in listToCheck) {
+            if (!LlmClient.isProviderReady(p, apiKeys, customBaseUrl)) continue
+            val list = runCatching { LlmClient.fetchModels(p, apiKeys[p].orEmpty(), customBaseUrl) }.getOrDefault(emptyList())
+            if (list.isNotEmpty()) {
+                updated[p] = (list + LlmClient.DEFAULT_MODELS[p].orEmpty()).distinct()
+                count++
+            }
+        }
+        if (count > 0 || onlyProvider == null) {
+            modelCatalog = updated
+            store.lastModelsRefreshAt = System.currentTimeMillis()
+            persist()
+        }
+        return count
+    }
+
     fun refreshModelsFromApis(onDone: (String) -> Unit) {
         scope.launch {
-            val updated = modelCatalog.toMutableMap()
-            var count = 0
-            for (p in LlmClient.PROVIDERS) {
-                val key = apiKeys[p].orEmpty()
-                if (key.isBlank()) continue
-                val list = runCatching { LlmClient.fetchModels(p, key) }.getOrDefault(emptyList())
-                if (list.isNotEmpty()) {
-                    updated[p] = (LlmClient.DEFAULT_MODELS[p].orEmpty() + list).distinct()
-                    count++
-                }
-            }
-            modelCatalog = updated
-            persist()
+            val count = refreshModelsInternal(onlyProvider = null)
             val msg = if (count > 0) {
                 if (lang == "en") "Updated models for $count provider(s)." else "Обновлены модели для $count провайдеров."
             } else {
@@ -845,7 +962,52 @@ class NexController(private val ctx: Context) {
         }
     }
 
-    fun sendUserMessage(rawText: String, fromAssistOverlay: Boolean = false) {
+    fun onWakeWordActivated(trailingText: String = "") {
+        voiceManager.stopSpeaking()
+        isSpeaking = false
+        sphereState = NexState.LISTENING
+        statusLabel = t("listening")
+        liveTranscript = trailingText
+        assistTranscript = trailingText
+        assistReply = ""
+    }
+
+    fun updateLiveTranscript(words: String) {
+        liveTranscript = words
+        assistTranscript = words
+        if (sphereState != NexState.LISTENING) {
+            sphereState = NexState.LISTENING
+            statusLabel = t("listening")
+        }
+    }
+
+    fun stopSpeaking() {
+        voiceManager.stopSpeaking()
+        isSpeaking = false
+        if (!isBusy && !isListening) {
+            sphereState = NexState.IDLE
+            statusLabel = t("ready")
+        }
+    }
+
+    private fun speakReply(text: String) {
+        if (text.isBlank()) return
+        isSpeaking = true
+        sphereState = NexState.SPEAKING
+        statusLabel = t("speaking")
+        val started = voiceManager.speak(text, lang, voice, speechRate) {
+            isSpeaking = false
+            if (!isBusy && !isListening) {
+                sphereState = NexState.IDLE
+                statusLabel = t("ready")
+            }
+        }
+        if (!started) {
+            isSpeaking = false
+        }
+    }
+
+    fun sendUserMessage(rawText: String, fromAssistOverlay: Boolean = false, fromVoice: Boolean = false) {
         val text = rawText.trim()
         val atts = pendingAttachments.toList()
         if ((text.isEmpty() && atts.isEmpty()) || isBusy) return
@@ -858,6 +1020,7 @@ class NexController(private val ctx: Context) {
             chatId,
             ChatMessage(role = "user", text = text, attachmentNames = atts.map { it.name })
         )
+        liveTranscript = ""
         if (fromAssistOverlay) {
             assistTranscript = text
             assistReply = ""
@@ -917,6 +1080,7 @@ class NexController(private val ctx: Context) {
                     }
                     appendMessage(chatId, ChatMessage(role = "assistant", text = doneTxt, media = media))
                     if (fromAssistOverlay) assistReply = doneTxt
+                    if (autoSpeak || fromAssistOverlay || fromVoice) speakReply(doneTxt)
                     return@launch
                 }
 
@@ -928,7 +1092,7 @@ class NexController(private val ctx: Context) {
                     val adapted = Strings.adaptName(ack, lang, female)
                     appendMessage(chatId, ChatMessage(role = "assistant", text = adapted))
                     if (fromAssistOverlay) assistReply = adapted
-                    if (autoSpeak || fromAssistOverlay) voiceManager.speak(adapted, lang, voice, speechRate)
+                    if (autoSpeak || fromAssistOverlay || fromVoice) speakReply(adapted)
                     return@launch
                 }
 
@@ -961,6 +1125,11 @@ class NexController(private val ctx: Context) {
                     webSearchEnabled = webSearchEnabled,
                     projectFolderUri = activeProject()?.folderUri,
                     history = llmHistory,
+                    allApiKeys = apiKeys,
+                    modelCatalog = modelCatalog,
+                    customBaseUrl = customBaseUrl,
+                    profileId = selectedProfileId,
+                    autoFailover = autoFailover,
                     onStatus = { st, lbl ->
                         sphereState = st
                         statusLabel = lbl
@@ -986,10 +1155,8 @@ class NexController(private val ctx: Context) {
                 }
                 if (fromAssistOverlay) assistReply = reply
 
-                sphereState = NexState.SPEAKING
-                statusLabel = t("speaking")
-                if (autoSpeak || fromAssistOverlay) {
-                    voiceManager.speak(reply, lang, voice, speechRate)
+                if (autoSpeak || fromAssistOverlay || fromVoice) {
+                    speakReply(reply)
                 }
             } catch (_: CancellationException) {
                 val cancelled = if (lang == "en") "Stopped." else "Остановлено."
@@ -1002,8 +1169,10 @@ class NexController(private val ctx: Context) {
             } finally {
                 activeTurnJob = null
                 isBusy = false
-                sphereState = NexState.IDLE
-                statusLabel = t("ready")
+                if (!isSpeaking) {
+                    sphereState = NexState.IDLE
+                    statusLabel = t("ready")
+                }
                 persist()
             }
         }
@@ -1039,23 +1208,28 @@ class NexController(private val ctx: Context) {
             if (fromAssistOverlay) assistReply = msg
             return
         }
-        voiceManager.stopSpeaking()
+        stopSpeaking()
         isListening = true
         sphereState = NexState.LISTENING
         statusLabel = t("listening")
+        liveTranscript = ""
         if (fromAssistOverlay) assistTranscript = ""
         voiceManager.startListening(
             lang = lang,
             onPartial = { partial ->
-                statusLabel = partial
+                // Keep status as "Слушает…" and show spoken words below
+                statusLabel = t("listening")
+                liveTranscript = partial
                 if (fromAssistOverlay) assistTranscript = partial
             },
             onResult = { recognized ->
                 isListening = false
-                sendUserMessage(recognized, fromAssistOverlay = fromAssistOverlay)
+                liveTranscript = recognized
+                sendUserMessage(recognized, fromAssistOverlay = fromAssistOverlay, fromVoice = true)
             },
             onError = { err ->
                 isListening = false
+                liveTranscript = ""
                 sphereState = NexState.IDLE
                 statusLabel = err
                 if (fromAssistOverlay) assistReply = err
@@ -1065,8 +1239,9 @@ class NexController(private val ctx: Context) {
 
     fun stopVoiceInput() {
         isListening = false
+        liveTranscript = ""
         voiceManager.stopListening()
-        if (!isBusy) {
+        if (!isBusy && !isSpeaking) {
             sphereState = NexState.IDLE
             statusLabel = t("ready")
         }

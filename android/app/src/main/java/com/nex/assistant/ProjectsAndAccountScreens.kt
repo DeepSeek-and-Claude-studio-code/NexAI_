@@ -250,89 +250,96 @@ fun AccountScreen(
             HorizontalDivider()
 
             // Google Drive Full File Storage & Auto-Sync
+            NexEditorialArt(kind = EditorialArtKind.STORAGE, width = 164.dp, height = 94.dp, modifier = Modifier.align(Alignment.CenterHorizontally))
+            val isEn = ctrl.lang == "en"
             Text(
-                if (ctrl.lang == "en") "Google Drive File Storage (All Files)" else "Хранение всех файлов на Google Диске",
+                if (isEn) "Unified Storage (Photos, Videos, Artifacts, Keys)" else "Единое хранилище (фото, видео, артефакты, ключи)",
                 fontWeight = FontWeight.Bold
             )
+            val st = ctrl.storageStats
             Text(
-                text = if (ctrl.lang == "en") {
-                    "Saves chats, encrypted API keys, settings, last model, all photos, videos, artifacts and attachments to your Google Drive (Nex/ folder)."
+                text = if (isEn) {
+                    "Media: ${st.mediaCount} · Artifacts: ${st.artifactCount} · Attachments: ${st.attachmentCount} · Chats: ${st.chatCount} · Keys: ${st.keysCount}"
                 } else {
-                    "Сохраняет на твой Google Диск чаты, зашифрованные ключи, настройки, последнюю модель, все фото, видео, артефакты и прикреплённые файлы (папка Nex/)."
+                    "Медиа: ${st.mediaCount} · Артефакты: ${st.artifactCount} · Вложения: ${st.attachmentCount} · Чаты: ${st.chatCount} · Ключи: ${st.keysCount}"
                 },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
             )
+
+            var sc by remember(ctrl.storageConfig) { mutableStateOf(ctrl.storageConfig) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("webdav" to "WebDAV", "s3" to "S3 (B2/R2)", "google_drive" to "Google Drive").forEach { (id, lbl) ->
+                    FilterChip(
+                        selected = sc.backend == id,
+                        onClick = { sc = sc.copy(backend = id); ctrl.updateStorageConfig(sc) },
+                        label = { Text(lbl) }
+                    )
+                }
+            }
 
             OutlinedTextField(
                 value = syncPass,
-                onValueChange = {
-                    syncPass = it
-                    ctrl.updateDrivePassphrase(it)
-                },
+                onValueChange = { syncPass = it; ctrl.updateDrivePassphrase(it) },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text(ctrl.t("sync_pass_hint")) },
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true
             )
 
-            if (ctrl.account.driveConnected) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(ctrl.t("drive_auto_sync"), fontWeight = FontWeight.SemiBold)
-                        Text(
-                            ctrl.t("drive_auto_sync_desc"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+            when (sc.backend) {
+                "webdav" -> {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(onClick = { sc = sc.copy(webdavUrl = "https://webdav.yandex.ru"); ctrl.updateStorageConfig(sc) }) { Text("Яндекс.Диск") }
+                        OutlinedButton(onClick = { sc = sc.copy(webdavUrl = "https://app.koofr.net/dav/Koofr"); ctrl.updateStorageConfig(sc) }) { Text("Koofr") }
                     }
-                    Switch(
-                        checked = ctrl.account.driveAutoSync,
-                        onCheckedChange = { ctrl.updateDriveAutoSync(it) }
-                    )
+                    OutlinedTextField(value = sc.webdavUrl, onValueChange = { sc = sc.copy(webdavUrl = it) }, modifier = Modifier.fillMaxWidth(), label = { Text("WebDAV URL") }, singleLine = true)
+                    OutlinedTextField(value = sc.webdavUser, onValueChange = { sc = sc.copy(webdavUser = it) }, modifier = Modifier.fillMaxWidth(), label = { Text(if (isEn) "Username / Email" else "Логин / Почта") }, singleLine = true)
+                    OutlinedTextField(value = sc.webdavPassword, onValueChange = { sc = sc.copy(webdavPassword = it) }, modifier = Modifier.fillMaxWidth(), label = { Text(if (isEn) "App Password" else "Пароль приложения") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                    OutlinedButton(onClick = { ctrl.updateStorageConfig(sc); syncMsg = "…"; ctrl.testUnifiedStorage { syncMsg = it } }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (isEn) "Save & Test WebDAV" else "Сохранить и проверить WebDAV")
+                    }
                 }
+                "s3" -> {
+                    OutlinedTextField(value = sc.s3Endpoint, onValueChange = { sc = sc.copy(s3Endpoint = it) }, modifier = Modifier.fillMaxWidth(), label = { Text("S3 Endpoint (B2 / R2 / MinIO)") }, singleLine = true)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(value = sc.s3Region, onValueChange = { sc = sc.copy(s3Region = it) }, modifier = Modifier.weight(1f), label = { Text("Region") }, singleLine = true)
+                        OutlinedTextField(value = sc.s3Bucket, onValueChange = { sc = sc.copy(s3Bucket = it) }, modifier = Modifier.weight(1f), label = { Text("Bucket") }, singleLine = true)
+                    }
+                    OutlinedTextField(value = sc.s3AccessKeyId, onValueChange = { sc = sc.copy(s3AccessKeyId = it) }, modifier = Modifier.fillMaxWidth(), label = { Text("Access Key ID") }, singleLine = true)
+                    OutlinedTextField(value = sc.s3SecretAccessKey, onValueChange = { sc = sc.copy(s3SecretAccessKey = it) }, modifier = Modifier.fillMaxWidth(), label = { Text("Secret Access Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                    OutlinedButton(onClick = { ctrl.updateStorageConfig(sc); syncMsg = "…"; ctrl.testUnifiedStorage { syncMsg = it } }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (isEn) "Save & Test S3" else "Сохранить и проверить S3")
+                    }
+                }
+                else -> {
+                    if (!ctrl.account.driveConnected) {
+                        OutlinedTextField(value = googleClientId, onValueChange = { googleClientId = it; ctrl.updateGoogleClientId(it) }, modifier = Modifier.fillMaxWidth(), label = { Text("Google Cloud OAuth Client ID") }, singleLine = true)
+                        Button(onClick = { ctrl.startGoogleSignIn(googleClientId, linkDriveOnly = ctrl.account.isSignedIn) }, modifier = Modifier.fillMaxWidth()) { Text(ctrl.t("link_drive_btn")) }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(selected = ctrl.account.driveFolderMode == "visible", onClick = { ctrl.updateDriveFolderMode("visible") }, label = { Text(ctrl.t("drive_folder_visible")) })
+                            FilterChip(selected = ctrl.account.driveFolderMode == "hidden", onClick = { ctrl.updateDriveFolderMode("hidden") }, label = { Text(ctrl.t("drive_folder_hidden")) })
+                        }
+                    }
+                }
+            }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = ctrl.account.driveFolderMode == "visible",
-                        onClick = { ctrl.updateDriveFolderMode("visible") },
-                        label = { Text(ctrl.t("drive_folder_visible")) }
-                    )
-                    FilterChip(
-                        selected = ctrl.account.driveFolderMode == "hidden",
-                        onClick = { ctrl.updateDriveFolderMode("hidden") },
-                        label = { Text(ctrl.t("drive_folder_hidden")) }
-                    )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(if (isEn) "Auto-sync all files" else "Автосохранение всех файлов", fontWeight = FontWeight.SemiBold)
+                    Text(ctrl.t("drive_auto_sync_desc"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                Switch(checked = ctrl.account.driveAutoSync, onCheckedChange = { ctrl.updateDriveAutoSync(it) })
+            }
 
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            syncMsg = "…"
-                            ctrl.syncToGoogleDrive(syncPass) { syncMsg = it }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text(ctrl.t("sync_drive_up")) }
-                    OutlinedButton(
-                        onClick = {
-                            syncMsg = "…"
-                            ctrl.restoreFromGoogleDrive(syncPass) { syncMsg = it }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text(ctrl.t("sync_drive_down")) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { syncMsg = "…"; ctrl.syncAllToUnifiedStorage(syncPass) { syncMsg = it } }, modifier = Modifier.weight(1f)) {
+                    Text(if (isEn) "Sync All ↑" else "Сохранить всё ↑")
                 }
-            } else {
-                OutlinedTextField(
-                    value = googleClientId,
-                    onValueChange = { googleClientId = it; ctrl.updateGoogleClientId(it) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Google Cloud OAuth Client ID") },
-                    singleLine = true
-                )
-                Button(
-                    onClick = { ctrl.startGoogleSignIn(googleClientId, linkDriveOnly = ctrl.account.isSignedIn) },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text(ctrl.t("link_drive_btn")) }
+                OutlinedButton(onClick = { syncMsg = "…"; ctrl.restoreAllFromUnifiedStorage(syncPass) { syncMsg = it } }, modifier = Modifier.weight(1f)) {
+                    Text(if (isEn) "Restore ↓" else "Загрузить ↓")
+                }
             }
 
             if (ctrl.driveSyncStatus.isNotBlank()) {

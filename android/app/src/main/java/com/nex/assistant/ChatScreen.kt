@@ -337,8 +337,19 @@ fun ChatScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(bottom = 6.dp)
+                    modifier = Modifier.padding(bottom = if (ctrl.liveTranscript.isBlank()) 6.dp else 2.dp)
                 )
+                if (ctrl.liveTranscript.isNotBlank()) {
+                    Text(
+                        text = "«${ctrl.liveTranscript}»",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                }
             }
             HorizontalDivider()
 
@@ -383,7 +394,31 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 item { Spacer(Modifier.height(4.dp)) }
-                items(messages, key = { it.id }) { msg ->
+                val hasUserMessages = messages.any { it.role == "user" || it.media != null || it.artifactId != null }
+                if (!hasUserMessages) {
+                    item(key = "welcome_editorial_hero") {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp, horizontal = 8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            NexEditorialArt(kind = EditorialArtKind.WELCOME)
+                            Text(
+                                text = if (ctrl.lang == "en") "What shall we work on?" else "Чем займёмся сегодня?",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = if (ctrl.lang == "en") "13 AI providers · Auto limit failover · Voice & Tools" else "13 провайдеров ИИ · Автопереключение лимитов · Голос и инструменты",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+                items(if (hasUserMessages) messages else emptyList(), key = { it.id }) { msg ->
                     Box(Modifier.animateItem()) {
                         ChatBubble(msg = msg, ctrl = ctrl)
                     }
@@ -907,14 +942,14 @@ private fun ModelPickerSheetContent(ctrl: NexController, onClose: () -> Unit) {
                         ).joinToString(" · ")
                     } else "${ctrl.t("key_needed")}: Gemini, OpenAI"
                 } else {
-                    val r = prof.resolveText(ctrl.apiKeys)
+                    val r = prof.resolveText(ctrl.apiKeys, ctrl.customBaseUrl, ctrl.modelCatalog)
                     if (r != null) "${ctrl.t("now_using")}: ${r.provider} · ${r.model}"
                     else "${ctrl.t("key_needed")}: ${prof.textRoutes.map { it.provider }.distinct().joinToString(", ")}"
                 }
                 val hasKey = if (prof.isMedia) {
                     prof.resolveMedia(GenMode.IMAGE, ctrl.apiKeys) != null || prof.resolveMedia(GenMode.VIDEO, ctrl.apiKeys) != null
                 } else {
-                    prof.resolveText(ctrl.apiKeys) != null
+                    prof.resolveText(ctrl.apiKeys, ctrl.customBaseUrl, ctrl.modelCatalog) != null
                 }
 
                 Surface(

@@ -118,6 +118,9 @@
   let accAuthTab = 'email';
   let authMsg = '';
   let driveLiveStatus = '';
+  let nexCodeSnap = null;
+  let storageStats = null;
+  let storageTab = null;
   let openAccordions = { nex: true };
 
   const mainSphere = window.NexSphereRenderer.attach(document.getElementById('mainSphere'));
@@ -194,6 +197,7 @@
       artifacts: 'viewArtifacts',
       artifactDetail: 'viewArtifactDetail',
       studio: 'viewStudio',
+      nexcode: 'viewNexCode',
       settings: 'viewSettings',
       account: 'viewAccount'
     };
@@ -236,12 +240,13 @@
       artifacts: tr('artifacts'),
       artifactDetail: (state.artifacts.find(a => a.id === activeArtifactId)?.title) || tr('artifacts'),
       studio: tr('studio'),
+      nexcode: 'Nex Code',
       settings: tr('settings'),
       account: tr('account')
     };
     document.getElementById('topTitle').textContent = titles[activeView] || agentName();
     document.getElementById('btnModelPill').textContent = currentModelPillText();
-    document.getElementById('btnModelPill').hidden = activeView !== 'chat';
+    document.getElementById('btnModelPill').hidden = (activeView !== 'chat' && activeView !== 'nexcode');
   }
 
   function renderChat() {
@@ -261,7 +266,30 @@
     const box = document.getElementById('messages');
     box.innerHTML = '';
     const chat = activeChat();
-    for (const m of (chat?.messages || [])) {
+    const msgs = chat?.messages || [];
+    const hasUserMsg = msgs.some(m => m.role === 'user' || m.media || m.artifactId);
+    if (!hasUserMsg) {
+      const hero = el('div', 'welcome-hero');
+      hero.appendChild(window.NexIllustrations.create('welcome'));
+      hero.appendChild(el('h2', '', state.lang === 'en' ? `What shall we work on${state.userName ? ', ' + state.userName : ''}?` : `Чем займёмся${state.userName ? ', ' + state.userName : ''}?`));
+      hero.appendChild(el('p', 'hero-sub', state.lang === 'en'
+        ? `${agentName()} can search the web, work with files, create documents, generate visuals, and auto-switch AI providers on quota limits.`
+        : `${agentName()} умеет искать в интернете, работать с файлами, создавать документы, фото и видео — и сам переключается на резервную модель при лимите.`));
+      const grid = el('div', 'starter-grid');
+      const starters = state.lang === 'en'
+        ? [['Search', 'Find the latest news and summarize key takeaways'], ['Document', 'Create a structured project plan with timeline and budget'], ['Code', 'Explain and refactor a tricky function cleanly'], ['Visuals', 'Generate a minimalist editorial illustration']]
+        : [['Поиск', 'Найди свежие новости по теме и сделай краткую выжимку'], ['Документ', 'Собери структурированный план проекта с этапами и бюджетом'], ['Идеи', 'Разбери сложную задачу по шагам и предложи лучший вариант'], ['Письмо', 'Напиши вежливое и чёткое деловое письмо по моим тезисам']];
+      starters.forEach(([tag, prompt]) => {
+        const card = el('button', 'starter-card');
+        card.appendChild(el('span', 'sc-tag', tag));
+        card.appendChild(el('div', 'sc-title', prompt));
+        card.onclick = () => { const inp = document.getElementById('chatInput'); inp.value = prompt; inp.focus(); };
+        grid.appendChild(card);
+      });
+      hero.appendChild(grid);
+      box.appendChild(hero);
+    }
+    for (const m of (hasUserMsg ? msgs : [])) {
       const bubble = el('div', `msg ${m.role}`);
       if (m.text) bubble.appendChild(document.createTextNode(m.text));
       if (m.attachmentNames?.length) bubble.appendChild(el('div', 'att-meta', '📎 ' + m.attachmentNames.join(', ')));
@@ -397,6 +425,12 @@
     addRow.appendChild(inp); addRow.appendChild(btn);
     root.appendChild(addRow);
 
+    if (!state.projects.length) {
+      const emp = el('div', 'empty-editorial');
+      emp.appendChild(window.NexIllustrations.create('projects', 'compact'));
+      emp.appendChild(el('p', 'sub', state.lang === 'en' ? 'Create a project and attach a folder so Nex can read and edit files in context.' : 'Создай проект и привяжи папку — тогда Некс сможет работать прямо с твоими файлами.'));
+      root.appendChild(emp);
+    }
     for (const p of state.projects) {
       const card = el('div', 'card-box');
       const head = el('div', 'flex-row'); head.style.justifyContent = 'space-between';
@@ -627,27 +661,45 @@
     root.appendChild(tabs);
 
     if (activeSettingsTab === 'ai') {
+      const isEn = state.lang === 'en';
       root.appendChild(el('p', 'sub', tr('keys_note')));
-      for (const p of constants.PROVIDERS) {
-        const st = state.apiKeyStatus[p];
-        root.appendChild(el('label', 'field-label', `${p} API Key ${st?.set ? '(' + st.masked + ')' : ''}`));
-        const row = el('div', 'flex-row');
-        const inp = el('input'); inp.type = 'password'; inp.placeholder = st?.set ? '•••••••• (enter to replace)' : `Paste ${p} key`;
-        const saveBtn = el('button', 'btn outline', 'OK');
-        saveBtn.onclick = () => window.nexApi.setApiKey(p, inp.value);
-        row.appendChild(inp); row.appendChild(saveBtn);
-        root.appendChild(row);
-      }
-      const refRow = el('div', 'flex-row'); refRow.style.marginTop = '16px';
+      const autoCard = el('div', 'card-box');
+      switchRow(autoCard, isEn ? 'Auto-switch AI provider on limit / quota' : 'Автопереключение при исчерпании лимита',
+        isEn ? 'Automatically switches to another connected API key on 429 / 402 / 503 limits.' : 'Если у одной нейросети закончился лимит (429 / 402 / 503), Некс сам переключится на другой подключённый ключ.',
+        state.autoFailover !== false, (v) => window.nexApi.updateSettings({ autoFailover: v }));
+      switchRow(autoCard, isEn ? 'Auto-refresh model lists from APIs' : 'Автообновление списка моделей из API',
+        isEn ? 'Automatically fetches latest models when saving a key and every 6 hours.' : 'Самостоятельно подтягивает свежие модели при добавлении ключа и каждые 6 часов.',
+        state.autoRefreshModels !== false, (v) => window.nexApi.updateSettings({ autoRefreshModels: v }));
+      const refRow = el('div', 'flex-row'); refRow.style.marginTop = '10px';
       const refBtn = el('button', 'btn outline', tr('refresh_models'));
-      const refMsg = el('small', '');
+      const refMsg = el('small', '', state.lastModelsRefreshAt ? (isEn ? `Last sync: ${new Date(state.lastModelsRefreshAt).toLocaleTimeString()}` : `Обновлено: ${new Date(state.lastModelsRefreshAt).toLocaleTimeString()}`) : '');
       refBtn.onclick = async () => {
         refMsg.textContent = '…';
         const r = await window.nexApi.refreshModels();
-        refMsg.textContent = r.updated ? `Updated: ${r.updated}` : 'No active keys';
+        refMsg.textContent = r.updated ? (isEn ? `Updated ${r.updated} provider(s)` : `Обновлено провайдеров: ${r.updated}`) : (isEn ? 'No active keys' : 'Нет активных ключей');
       };
       refRow.appendChild(refBtn); refRow.appendChild(refMsg);
-      root.appendChild(refRow);
+      autoCard.appendChild(refRow);
+      root.appendChild(autoCard);
+
+      const metaMap = constants.PROVIDER_META || {};
+      for (const p of constants.PROVIDERS) {
+        const st = state.apiKeyStatus[p], info = metaMap[p] || {};
+        const badge = (p === 'Custom' && state.customBaseUrl) ? `(${state.customBaseUrl})` : (st?.set ? `(${st.masked})` : '');
+        root.appendChild(el('label', 'field-label', `${p} API Key ${badge}`));
+        if (info.codingNote) root.appendChild(el('div', 'prov-meta', info.codingNote));
+        if (p === 'Custom') {
+          const urlRow = el('div', 'flex-row'); urlRow.style.marginBottom = '6px';
+          const uInp = el('input'); uInp.type = 'text'; uInp.value = state.customBaseUrl || ''; uInp.placeholder = 'Base URL (e.g. http://localhost:11434/v1 for Ollama)';
+          const uBtn = el('button', 'btn outline', 'URL'); uBtn.onclick = () => window.nexApi.updateSettings({ customBaseUrl: uInp.value.trim() });
+          urlRow.appendChild(uInp); urlRow.appendChild(uBtn); root.appendChild(urlRow);
+        }
+        const row = el('div', 'flex-row');
+        const inp = el('input'); inp.type = 'password'; inp.placeholder = st?.set ? '•••••••• (enter to replace)' : (info.hint || `Paste ${p} key`);
+        const saveBtn = el('button', 'btn outline', 'OK');
+        saveBtn.onclick = () => { window.nexApi.setApiKey(p, inp.value); inp.value = ''; };
+        row.appendChild(inp); row.appendChild(saveBtn); root.appendChild(row);
+      }
     } else if (activeSettingsTab === 'voice') {
       root.appendChild(el('label', 'field-label', tr('voice_label')));
       const vRow = el('div', 'tabs-row');
@@ -781,6 +833,102 @@
     }
   }
 
+  function formatBytes(bytes) {
+    const b = Number(bytes || 0);
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  function renderNexCode() {
+    const root = document.getElementById('viewNexCode');
+    root.innerHTML = '';
+    const isEn = state.lang === 'en';
+    if (!nexCodeSnap) {
+      window.nexApi.nexCodeGet().then(snap => { nexCodeSnap = snap; if (activeView === 'nexcode') renderNexCode(); });
+      root.appendChild(el('p', 'sub', isEn ? 'Loading Nex Code…' : 'Загружаю Nex Code…'));
+      return;
+    }
+    const layout = el('div', 'nc-layout');
+    const sb = el('div', 'nc-sessions');
+    const btnNew = el('button', 'sb-btn primary', isEn ? '+ New session' : '+ Новая сессия');
+    btnNew.onclick = async () => { nexCodeSnap = await window.nexApi.nexCodeNew(); renderNexCode(); };
+    sb.appendChild(btnNew);
+    sb.appendChild(el('div', 'sb-label', isEn ? 'Nex Code History' : 'История Nex Code'));
+    const activeId = nexCodeSnap.activeSession?.id;
+    for (const s of (nexCodeSnap.sessions || [])) {
+      const row = el('div', 'chat-row' + (s.id === activeId ? ' active' : ''));
+      const b = el('button', 'c-title', s.title || 'Nex Code'); b.title = s.cwd || '';
+      b.onclick = async () => { nexCodeSnap = await window.nexApi.nexCodeOpen(s.id); renderNexCode(); };
+      const del = el('button', 'c-del', '×');
+      del.onclick = async (e) => { e.stopPropagation(); nexCodeSnap = await window.nexApi.nexCodeDelete(s.id); renderNexCode(); };
+      row.appendChild(b); row.appendChild(del); sb.appendChild(row);
+    }
+    layout.appendChild(sb);
+
+    const main = el('div', 'nc-main'), sess = nexCodeSnap.activeSession || { cwd: '', uiLog: [] };
+    const bar = el('div', 'nc-toolbar');
+    bar.appendChild(el('span', 'nc-cwd', `📁 ${sess.cwd || ''}`));
+    const bDir = el('button', 'pill-btn small', isEn ? 'Folder' : 'Папка'); bDir.onclick = async () => { nexCodeSnap = await window.nexApi.nexCodePickFolder(); renderNexCode(); };
+    const bAuto = el('button', 'pill-btn small' + (nexCodeSnap.autoApprove ? ' active' : ''), (isEn ? 'Auto: ' : 'Авто: ') + (nexCodeSnap.autoApprove ? 'ON' : 'OFF'));
+    bAuto.onclick = async () => { nexCodeSnap = await window.nexApi.nexCodeToggleAuto(!nexCodeSnap.autoApprove); renderNexCode(); };
+    const bTerm = el('button', 'pill-btn small', isEn ? 'External Terminal' : 'Внешний терминал'); bTerm.onclick = () => window.nexApi.openNexCode();
+    bar.appendChild(bDir); bar.appendChild(bAuto); bar.appendChild(bTerm); main.appendChild(bar);
+
+    if (confirmation) {
+      const banner = el('div', 'confirm-box'); banner.appendChild(el('strong', '', confirmation.title)); banner.appendChild(el('p', '', confirmation.details));
+      const br = el('div', 'flex-row');
+      const okB = el('button', 'btn', isEn ? 'Confirm' : 'Подтвердить'); okB.onclick = () => window.nexApi.resolveConfirmation(true);
+      const noB = el('button', 'btn outline', isEn ? 'Cancel' : 'Отмена'); noB.onclick = () => window.nexApi.resolveConfirmation(false);
+      br.appendChild(okB); br.appendChild(noB); banner.appendChild(br); main.appendChild(banner);
+    }
+
+    const logBox = el('div', 'nc-log'), items = sess.uiLog || [];
+    if (!items.length) {
+      const hero = el('div', 'welcome-hero');
+      hero.appendChild(window.NexIllustrations.create('nexcode'));
+      hero.appendChild(el('h2', '', 'Nex Code'));
+      hero.appendChild(el('p', 'hero-sub', isEn ? 'Autonomous engineering shell with its own separate history. Reads & edits files, searches the web, inspects git, runs builds and auto-switches AI on limits.' : 'Автономная агентная оболочка с отдельной историей. Сама изучает файлы, гуглит документацию и ошибки, правит код, запускает команды и переключает API при лимите.'));
+      const grid = el('div', 'starter-grid');
+      const ncStarters = isEn
+        ? [['Explore', 'Inspect this project structure and explain how it works'], ['Research', 'Search the web for the latest docs and fix our dependency error'], ['Refactor', 'Find duplicated logic, clean it up, and run tests'], ['Git', 'Check git status & diff and prepare a clean commit summary']]
+        : [['Разбор', 'Изучи структуру этой папки и объясни, как устроен проект'], ['Поиск + фикс', 'Найди причину ошибки в коде, погугли решение и исправь'], ['Тесты', 'Запусти сборку/тесты, посмотри ошибки и почини их'], ['Git', 'Проверь git status и diff и предложи чистый коммит']];
+      ncStarters.forEach(([tag, pr]) => { const c = el('button', 'starter-card'); c.appendChild(el('span', 'sc-tag', tag)); c.appendChild(el('div', 'sc-title', pr)); c.onclick = () => { inp.value = pr; inp.focus(); }; grid.appendChild(c); });
+      hero.appendChild(grid); logBox.appendChild(hero);
+    } else {
+      for (const item of items) {
+        if (item.kind === 'user') logBox.appendChild(el('div', 'msg user', item.text));
+        else if (item.kind === 'assistant') logBox.appendChild(el('div', 'msg assistant', item.text));
+        else if (item.kind === 'error') logBox.appendChild(el('div', 'msg system', item.text));
+        else if (item.kind === 'note') logBox.appendChild(el('div', 'nc-note', item.text));
+        else if (item.kind === 'tool') {
+          const card = el('div', 'nc-tool-card ' + (item.status || '')), head = el('div', 'nc-tool-head');
+          head.appendChild(el('span', '', `${item.status === 'running' ? '⏳' : (item.status === 'error' ? '✕' : '✓')} ${item.tool}`));
+          head.appendChild(el('small', '', item.status || '')); card.appendChild(head);
+          const argsStr = JSON.stringify(item.args || {}); if (argsStr !== '{}') card.appendChild(el('div', 'nc-tool-args', argsStr.slice(0, 260)));
+          if (item.output) card.appendChild(el('pre', 'nc-tool-out', item.output.slice(0, 1600)));
+          logBox.appendChild(card);
+        }
+      }
+    }
+    main.appendChild(logBox); logBox.scrollTop = logBox.scrollHeight;
+
+    const comp = el('div', 'composer'), inp = el('textarea');
+    inp.rows = 1; inp.placeholder = isEn ? 'Give Nex Code an engineering task (files, terminal, web search)…' : 'Поставь задачу Nex Code (файлы, команды, поиск в интернете)…';
+    const sendBtn = el('button', 'icon-btn round send-btn', nexCodeSnap.busy ? '■' : '↑');
+    const doSend = async () => {
+      if (nexCodeSnap.busy) { await window.nexApi.nexCodeCancel(); return; }
+      const val = inp.value.trim(); if (!val) return; inp.value = '';
+      const res = await window.nexApi.nexCodeSend(val);
+      if (res && !res.ok) { nexCodeSnap = await window.nexApi.nexCodeGet(); renderNexCode(); }
+    };
+    sendBtn.onclick = doSend;
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); } });
+    comp.appendChild(inp); comp.appendChild(sendBtn); main.appendChild(comp);
+    layout.appendChild(main); root.appendChild(layout);
+  }
+
   function renderAccount() {
     const root = document.getElementById('viewAccount');
     root.innerHTML = '';
@@ -855,81 +1003,96 @@
     if (authMsg) authCard.appendChild(el('p', 'sub', authMsg));
     root.appendChild(authCard);
 
-    // Google Drive Full File Storage & Auto-Sync
+    // Unified Multi-Backend Storage Hub
     const syncCard = el('div', 'card-box');
-    syncCard.appendChild(el('h3', '', state.lang === 'en' ? 'Google Drive File Storage (All Files)' : 'Хранение всех файлов на Google Диске'));
-    syncCard.appendChild(el('p', 'sub', state.lang === 'en'
-      ? 'Saves all chats, encrypted API keys, settings, last model, photos, videos, artifacts and attachments directly to your Google Drive (Nex/ folder).'
-      : 'Сохраняет на твой Google Диск все чаты, зашифрованные ключи, настройки, последнюю модель, фото, видео, артефакты и вложения (папка Nex/).'
-    ));
-    const passInp = el('input'); passInp.type = 'password';
-    passInp.placeholder = acc.hasDrivePassphrase ? '•••••••• (' + tr('sync_pass') + ')' : tr('sync_pass');
-    passInp.style.marginBottom = '10px';
-    passInp.onchange = () => { if (passInp.value.trim()) window.nexApi.setDrivePassphrase(passInp.value.trim()); };
-    syncCard.appendChild(passInp);
-    const syncStatus = el('p', 'sub', driveLiveStatus);
-    syncStatus.style.color = 'var(--ok)';
+    const isEn = state.lang === 'en';
+    syncCard.appendChild(window.NexIllustrations.create('storage', 'compact'));
+    syncCard.appendChild(el('h3', '', isEn ? 'Unified Storage (Photos, Videos, Artifacts, Keys & Chats)' : 'Единое хранилище (фото, видео, артефакты, ключи и чаты)'));
+    syncCard.appendChild(el('p', 'sub', isEn
+      ? 'Store everything with AES-256-GCM encryption for API keys & chats. Pick WebDAV (Yandex Disk / Nextcloud), S3 (Backblaze B2 / R2 / MinIO), Google Drive, or a local synced folder.'
+      : 'Все фото, видео, артефакты, вложения, чаты и шифрованные (AES-256-GCM) API-ключи в одном месте. Выбери WebDAV (Яндекс.Диск / Nextcloud), S3 (Backblaze B2 / R2 / MinIO), Google Диск или локальную папку.'));
 
-    if (acc.driveConnected) {
-      switchRow(syncCard, tr('drive_auto'), tr('drive_auto_d'), acc.driveAutoSync, (v) => window.nexApi.updateSettings({ driveAutoSync: v }));
-      const modeTabs = el('div', 'tabs-row'); modeTabs.style.marginTop = '10px';
-      [['visible', tr('drive_vis')], ['hidden', tr('drive_hid')]].forEach(([m, lbl]) => {
-        const b = el('button', 'pill-btn small' + (acc.driveFolderMode === m ? ' active' : ''), lbl);
-        b.onclick = () => window.nexApi.updateSettings({ driveFolderMode: m });
-        modeTabs.appendChild(b);
-      });
-      syncCard.appendChild(modeTabs);
-
-      const gRow = el('div', 'flex-row'); gRow.style.marginBottom = '10px';
-      const bUp = el('button', 'btn', tr('sync_up'));
-      bUp.onclick = async () => {
-        syncStatus.textContent = '…';
-        const r = await window.nexApi.syncDriveUpload(passInp.value);
-        if (r.ok) {
-          const rep = r.report || {};
-          syncStatus.textContent = state.lang === 'en'
-            ? `Saved to Google Drive (${rep.folderMode === 'visible' ? 'Nex/' : 'appDataFolder'}): uploaded ${rep.uploadedFiles}, unchanged ${rep.skippedFiles}.`
-            : `Сохранено на Google Диск (${rep.folderMode === 'visible' ? 'Nex/' : 'appDataFolder'}): загружено ${rep.uploadedFiles}, без изменений ${rep.skippedFiles}.`;
-        } else syncStatus.textContent = 'Error: ' + r.error;
-      };
-      const bDn = el('button', 'btn outline', tr('sync_down'));
-      bDn.onclick = async () => {
-        syncStatus.textContent = '…';
-        const r = await window.nexApi.syncDriveDownload(passInp.value);
-        if (r.ok) {
-          const rep = r.report || {};
-          syncStatus.textContent = state.lang === 'en'
-            ? `Restored from Google Drive: downloaded ${rep.downloadedFiles}, already local ${rep.skippedFiles}.`
-            : `Загружено с Google Диска: скачано ${rep.downloadedFiles}, уже локально ${rep.skippedFiles}.`;
-        } else syncStatus.textContent = 'Error: ' + r.error;
-      };
-      gRow.appendChild(bUp); gRow.appendChild(bDn);
-      syncCard.appendChild(gRow);
+    if (!storageStats) {
+      window.nexApi.storageGetStats().then(st => { storageStats = st; if (activeView === 'account') renderAccount(); });
     } else {
-      const iCid = el('input'); iCid.type = 'text'; iCid.value = acc.googleClientId || '';
-      iCid.placeholder = 'Google Cloud Desktop OAuth Client ID'; iCid.style.marginBottom = '8px';
-      const bLink = el('button', 'btn', tr('link_drive')); bLink.style.marginBottom = '10px';
-      bLink.onclick = async () => {
-        syncStatus.textContent = state.lang === 'en' ? 'Opening Google Drive authorization…' : 'Открываю авторизацию Google Диска…';
-        const r = await window.nexApi.signInGoogle(iCid.value, Boolean(acc.isSignedIn));
-        syncStatus.textContent = r.ok ? 'Google Drive connected!' : 'Error: ' + r.error;
-      };
-      syncCard.appendChild(iCid); syncCard.appendChild(bLink);
+      const sg = el('div', 'stats-grid');
+      [[`${storageStats.photoCount + storageStats.videoCount}`, `${isEn ? 'Photos & Videos' : 'Фото и видео'} · ${formatBytes(storageStats.mediaBytes)}`],
+       [`${storageStats.artifactCount}`, `${isEn ? 'Artifacts' : 'Артефакты'} · ${formatBytes(storageStats.artifactBytes)}`],
+       [`${storageStats.attachmentCount}`, `${isEn ? 'Attachments' : 'Вложения'} · ${formatBytes(storageStats.attachmentBytes)}`],
+       [`${storageStats.chatCount}`, isEn ? 'Chats' : 'Чаты'],
+       [`${storageStats.nexCodeCount}`, isEn ? 'Nex Code sessions' : 'Сессии Nex Code'],
+       [`${storageStats.keysCount}`, isEn ? 'Encrypted API Keys' : 'Шифр. ключи API']
+      ].forEach(([v, l]) => { const t = el('div', 'stat-tile'); t.appendChild(el('div', 'st-val', v)); t.appendChild(el('div', 'st-lbl', l)); sg.appendChild(t); });
+      syncCard.appendChild(sg);
     }
 
+    const sc = state.storageConfig || { backend: 'webdav', webdav: {}, s3: {}, localFolder: '' };
+    const curBackend = storageTab || sc.backend || 'webdav';
+    const bTabs = el('div', 'tabs-row');
+    [['webdav', isEn ? 'WebDAV (Yandex / Nextcloud)' : 'WebDAV (Яндекс / Nextcloud)'], ['s3', 'S3 (B2 / R2 / MinIO)'], ['local_folder', isEn ? 'Local Folder' : 'Локальная папка'], ['google_drive', 'Google Drive']].forEach(([id, lbl]) => {
+      const b = el('button', 'pill-btn small' + (curBackend === id ? ' active' : ''), lbl);
+      b.onclick = async () => { storageTab = id; await window.nexApi.storageSaveConfig({ backend: id }); renderAccount(); };
+      bTabs.appendChild(b);
+    });
+    syncCard.appendChild(bTabs);
+
+    const passInp = el('input'); passInp.type = 'password'; passInp.placeholder = acc.hasDrivePassphrase ? '•••••••• (' + tr('sync_pass') + ')' : tr('sync_pass'); passInp.style.marginBottom = '10px';
+    passInp.onchange = () => { if (passInp.value.trim()) window.nexApi.setDrivePassphrase(passInp.value.trim()); };
+    syncCard.appendChild(passInp);
+    const syncStatus = el('p', 'sub', driveLiveStatus); syncStatus.style.color = 'var(--ok)';
+
+    if (curBackend === 'webdav') {
+      const presets = el('div', 'tabs-row');
+      [['Яндекс.Диск', 'https://webdav.yandex.ru'], ['Nextcloud', 'https://your-cloud.example/remote.php/dav/files/USERNAME'], ['Koofr', 'https://app.koofr.net/dav/Koofr']].forEach(([name, presetUrl]) => {
+        const pb = el('button', 'pill-btn small', name); pb.onclick = () => { iUrl.value = presetUrl; }; presets.appendChild(pb);
+      });
+      syncCard.appendChild(presets);
+      const iUrl = el('input'); iUrl.type = 'text'; iUrl.value = sc.webdav?.url || ''; iUrl.placeholder = 'WebDAV URL (https://webdav.yandex.ru)'; iUrl.style.marginBottom = '8px';
+      const iUser = el('input'); iUser.type = 'text'; iUser.value = sc.webdav?.username || ''; iUser.placeholder = isEn ? 'Username / Email' : 'Логин / Почта'; iUser.style.marginBottom = '8px';
+      const iPass = el('input'); iPass.type = 'password'; iPass.placeholder = sc.webdav?.hasPassword ? '•••••••• (пароль приложения сохранён)' : (isEn ? 'App password' : 'Пароль приложения (WebDAV)'); iPass.style.marginBottom = '8px';
+      const bSave = el('button', 'btn outline', isEn ? 'Save & Test Connection' : 'Сохранить и проверить связь'); bSave.style.marginBottom = '10px';
+      bSave.onclick = async () => { syncStatus.textContent = '…'; await window.nexApi.storageSaveConfig({ backend: 'webdav', webdav: { url: iUrl.value, username: iUser.value, password: iPass.value } }); const t = await window.nexApi.storageTest(); syncStatus.textContent = t.ok ? `✓ ${t.message}` : `Ошибка: ${t.error}`; };
+      syncCard.appendChild(iUrl); syncCard.appendChild(iUser); syncCard.appendChild(iPass); syncCard.appendChild(bSave);
+    } else if (curBackend === 's3') {
+      const iEp = el('input'); iEp.type = 'text'; iEp.value = sc.s3?.endpoint || ''; iEp.placeholder = 'Endpoint (https://s3.us-west-004.backblazeb2.com / R2 / MinIO)'; iEp.style.marginBottom = '8px';
+      const rRow = el('div', 'flex-row'); rRow.style.marginBottom = '8px';
+      const iReg = el('input'); iReg.type = 'text'; iReg.value = sc.s3?.region || 'auto'; iReg.placeholder = 'Region (auto / us-east-1)';
+      const iBkt = el('input'); iBkt.type = 'text'; iBkt.value = sc.s3?.bucket || ''; iBkt.placeholder = 'Bucket name'; rRow.appendChild(iReg); rRow.appendChild(iBkt);
+      const iAk = el('input'); iAk.type = 'text'; iAk.value = sc.s3?.accessKeyId || ''; iAk.placeholder = 'Access Key ID'; iAk.style.marginBottom = '8px';
+      const iSk = el('input'); iSk.type = 'password'; iSk.placeholder = sc.s3?.hasSecret ? '•••••••• (Secret Key saved)' : 'Secret Access Key'; iSk.style.marginBottom = '8px';
+      const bSave = el('button', 'btn outline', isEn ? 'Save & Test S3' : 'Сохранить и проверить S3'); bSave.style.marginBottom = '10px';
+      bSave.onclick = async () => { syncStatus.textContent = '…'; await window.nexApi.storageSaveConfig({ backend: 's3', s3: { endpoint: iEp.value, region: iReg.value, bucket: iBkt.value, accessKeyId: iAk.value, secretAccessKey: iSk.value } }); const t = await window.nexApi.storageTest(); syncStatus.textContent = t.ok ? `✓ ${t.message}` : `Ошибка: ${t.error}`; };
+      syncCard.appendChild(iEp); syncCard.appendChild(rRow); syncCard.appendChild(iAk); syncCard.appendChild(iSk); syncCard.appendChild(bSave);
+    } else if (curBackend === 'local_folder') {
+      syncCard.appendChild(el('p', 'sub', sc.localFolder ? `📁 ${sc.localFolder}/Nex/` : (isEn ? 'Choose any synced folder (Syncthing, Dropbox, Yandex Disk, Nextcloud).' : 'Выбери любую папку (Syncthing, Dropbox, Яндекс.Диск, Nextcloud) для автозеркалирования всех файлов.')));
+      const bPick = el('button', 'btn outline', isEn ? 'Choose Sync Folder' : 'Выбрать папку хранения'); bPick.style.marginBottom = '10px';
+      bPick.onclick = async () => { const r = await window.nexApi.storagePickLocalFolder(); if (r && r.ok) { syncStatus.textContent = `✓ ${r.folder}/Nex/`; renderAccount(); } };
+      syncCard.appendChild(bPick);
+    } else if (curBackend === 'google_drive') {
+      if (acc.driveConnected) {
+        const modeTabs = el('div', 'tabs-row');
+        [['visible', tr('drive_vis')], ['hidden', tr('drive_hid')]].forEach(([m, lbl]) => { const b = el('button', 'pill-btn small' + (acc.driveFolderMode === m ? ' active' : ''), lbl); b.onclick = () => window.nexApi.updateSettings({ driveFolderMode: m }); modeTabs.appendChild(b); });
+        syncCard.appendChild(modeTabs);
+      } else {
+        const iCid = el('input'); iCid.type = 'text'; iCid.value = acc.googleClientId || ''; iCid.placeholder = 'Google Cloud Desktop OAuth Client ID'; iCid.style.marginBottom = '8px';
+        const bLink = el('button', 'btn', tr('link_drive')); bLink.style.marginBottom = '10px';
+        bLink.onclick = async () => { syncStatus.textContent = isEn ? 'Opening Google Drive authorization…' : 'Открываю авторизацию Google Диска…'; const r = await window.nexApi.signInGoogle(iCid.value, Boolean(acc.isSignedIn)); syncStatus.textContent = r.ok ? 'Google Drive connected!' : 'Error: ' + r.error; };
+        syncCard.appendChild(iCid); syncCard.appendChild(bLink);
+      }
+    }
+
+    switchRow(syncCard, isEn ? 'Auto-sync all files to active storage' : 'Автосохранение всех файлов в хранилище', tr('drive_auto_d'), acc.driveAutoSync, (v) => window.nexApi.updateSettings({ driveAutoSync: v }));
+    const gRow = el('div', 'flex-row'); gRow.style.margin = '10px 0';
+    const bUp = el('button', 'btn', isEn ? 'Sync All Now ↑' : 'Сохранить всё ↑');
+    bUp.onclick = async () => { syncStatus.textContent = '…'; const r = await window.nexApi.storagePushAll(passInp.value); if (r.ok) { const rep = r.report || {}; storageStats = await window.nexApi.storageGetStats(); syncStatus.textContent = isEn ? `Saved (${rep.backend}): uploaded ${rep.uploadedFiles}, unchanged ${rep.skippedFiles}.` : `Сохранено (${rep.backend}): загружено ${rep.uploadedFiles}, без изменений ${rep.skippedFiles}.`; } else syncStatus.textContent = 'Error: ' + r.error; };
+    const bDn = el('button', 'btn outline', isEn ? 'Restore All ↓' : 'Загрузить всё ↓');
+    bDn.onclick = async () => { syncStatus.textContent = '…'; const r = await window.nexApi.storagePullAll(passInp.value); if (r.ok) { const rep = r.report || {}; storageStats = await window.nexApi.storageGetStats(); syncStatus.textContent = isEn ? `Restored (${rep.backend}): downloaded ${rep.downloadedFiles}, already local ${rep.skippedFiles}.` : `Загружено (${rep.backend}): скачано ${rep.downloadedFiles}, уже локально ${rep.skippedFiles}.`; } else syncStatus.textContent = 'Error: ' + r.error; };
+    gRow.appendChild(bUp); gRow.appendChild(bDn); syncCard.appendChild(gRow);
+
     const vRow = el('div', 'flex-row');
-    const bExp = el('button', 'btn outline', tr('vault_exp'));
-    bExp.onclick = async () => {
-      const r = await window.nexApi.exportVault(passInp.value);
-      if (!r.canceled) syncStatus.textContent = r.ok ? `Saved: ${r.filePath}` : 'Error: ' + r.error;
-    };
-    const bImp = el('button', 'btn outline', tr('vault_imp'));
-    bImp.onclick = async () => {
-      const r = await window.nexApi.importVault(passInp.value);
-      if (!r.canceled) syncStatus.textContent = r.ok ? 'Restored!' : 'Error: ' + r.error;
-    };
-    vRow.appendChild(bExp); vRow.appendChild(bImp);
-    syncCard.appendChild(vRow);
+    const bExp = el('button', 'btn outline', tr('vault_exp')); bExp.onclick = async () => { const r = await window.nexApi.exportVault(passInp.value); if (!r.canceled) syncStatus.textContent = r.ok ? `Saved: ${r.filePath}` : 'Error: ' + r.error; };
+    const bImp = el('button', 'btn outline', tr('vault_imp')); bImp.onclick = async () => { const r = await window.nexApi.importVault(passInp.value); if (!r.canceled) syncStatus.textContent = r.ok ? 'Restored!' : 'Error: ' + r.error; };
+    vRow.appendChild(bExp); vRow.appendChild(bImp); syncCard.appendChild(vRow);
     syncCard.appendChild(syncStatus);
     root.appendChild(syncCard);
   }
@@ -941,7 +1104,7 @@
     modal.hidden = false;
 
     const keys = {};
-    for (const p of constants.PROVIDERS) keys[p] = state.apiKeyStatus[p]?.set;
+    for (const p of constants.PROVIDERS) keys[p] = (p === 'Custom') ? Boolean(state.customBaseUrl) : Boolean(state.apiKeyStatus[p]?.set);
 
     body.appendChild(el('label', 'field-label', tr('effort')));
     const eRow = el('div', 'tabs-row');
@@ -1168,15 +1331,28 @@
     renderSidebar();
     renderTopBar();
     if (activeView === 'chat') renderChat();
+    else if (activeView === 'nexcode') renderNexCode();
     else if (activeView === 'projects') renderProjects();
     else if (activeView === 'artifacts') renderArtifactsLib();
     else if (activeView === 'artifactDetail') renderArtifactDetail();
     else if (activeView === 'studio') renderStudio();
+    else if (activeView === 'nexcode') renderNexCode();
     else if (activeView === 'settings') renderSettings();
     else if (activeView === 'account') renderAccount();
   }
 
-  async function sendCurrent() {
+  let currentAudioEl = null;
+  function stopRendererAudio() {
+    if (currentAudioEl) {
+      try { currentAudioEl.pause(); currentAudioEl.src = ''; } catch (_) {}
+      currentAudioEl = null;
+    }
+    if (window.speechSynthesis) {
+      try { window.speechSynthesis.cancel(); } catch (_) {}
+    }
+  }
+
+  async function sendCurrent(opts = {}) {
     if (isBusy) { await window.nexApi.cancelGeneration(); return; }
     const inp = document.getElementById('chatInput');
     const text = inp.value.trim();
@@ -1187,7 +1363,7 @@
     isBusy = true;
     renderChat();
     try {
-      await window.nexApi.sendMessage({ text, attachments: toSendAtts, genMode });
+      await window.nexApi.sendMessage({ text, attachments: toSendAtts, genMode, fromVoice: Boolean(opts.fromVoice) });
     } finally {
       isBusy = false;
       renderAll();
@@ -1201,27 +1377,30 @@
   document.getElementById('btnArtifacts').onclick = () => showView('artifacts');
   document.getElementById('btnStudio').onclick = () => showView('studio');
   document.getElementById('btnSettings').onclick = () => showView('settings');
-  document.getElementById('btnAccount').onclick = () => showView('account');
-  document.getElementById('btnNexCode').onclick = () => window.nexApi.openNexCode();
+  document.getElementById('btnAccount').onclick = () => { storageStats = null; showView('account'); };
+  document.getElementById('btnNexCode').onclick = () => showView('nexcode');
   document.getElementById('btnModelPill').onclick = openModelModal;
   document.getElementById('modelModal').onclick = (e) => { if (e.target.id === 'modelModal') document.getElementById('modelModal').hidden = true; };
   document.getElementById('btnPlus').onclick = (e) => { e.stopPropagation(); const m = document.getElementById('plusMenu'); renderPlusMenu(); m.hidden = !m.hidden; };
   document.addEventListener('click', () => { document.getElementById('plusMenu').hidden = true; });
-  document.getElementById('btnSend').onclick = sendCurrent;
+  document.getElementById('btnSend').onclick = () => sendCurrent({ fromVoice: false });
   document.getElementById('btnMic').onclick = async () => {
     const active = await window.NexVoice.toggleManualRecord();
     document.getElementById('btnMic').classList.toggle('send-btn', active);
   };
 
   window.NexVoice.init({
-    onTranscript: (text) => {
+    onTranscript: (text, meta) => {
       document.getElementById('btnMic').classList.remove('send-btn');
       const inp = document.getElementById('chatInput');
       inp.value = text;
-      sendCurrent();
+      sendCurrent({ fromVoice: Boolean(meta?.fromVoice) });
     },
     onStatus: (msg) => {
       document.getElementById('statusText').textContent = msg;
+    },
+    onMicActive: (active) => {
+      document.getElementById('btnMic').classList.toggle('send-btn', Boolean(active));
     },
     getLang: () => state?.lang || 'ru',
     isBusy: () => isBusy
@@ -1240,6 +1419,14 @@
     if (activeView === 'chat') {
       mainSphere.update(data.state, data.female);
       document.getElementById('statusText').textContent = data.label || tr('ready');
+      const lt = document.getElementById('liveTranscript');
+      if (data.transcript) {
+        lt.textContent = `«${data.transcript}»`;
+        lt.hidden = false;
+      } else {
+        lt.textContent = '';
+        lt.hidden = true;
+      }
     }
   });
 
@@ -1248,9 +1435,62 @@
     if (activeView === 'account') renderAccount();
   });
 
+  window.nexApi.onNexCodeUpdate((snap) => { nexCodeSnap = snap; if (activeView === 'nexcode') renderNexCode(); });
+
   window.nexApi.onConfirmation((pending) => {
     confirmation = pending;
     if (activeView === 'chat') renderChat();
+    else if (activeView === 'nexcode') renderNexCode();
+  });
+
+  window.nexApi.onSpeakingState((speaking) => {
+    window.NexVoice.setSpeaking(speaking);
+  });
+
+  window.nexApi.onStopSpeaking(() => {
+    stopRendererAudio();
+    window.NexVoice.setSpeaking(false);
+  });
+
+  window.nexApi.onSpeakPayload((payload) => {
+    stopRendererAudio();
+    if (!payload) { window.nexApi.speechFinished(); return; }
+    window.NexVoice.setSpeaking(true);
+
+    if (payload.mode === 'audio' && payload.base64) {
+      const audio = new Audio(`data:${payload.mimeType || 'audio/wav'};base64,${payload.base64}`);
+      currentAudioEl = audio;
+      const done = () => {
+        if (currentAudioEl === audio) currentAudioEl = null;
+        window.NexVoice.setSpeaking(false);
+        window.nexApi.speechFinished();
+      };
+      audio.onended = done;
+      audio.onerror = done;
+      audio.play().catch(done);
+      return;
+    }
+
+    if (payload.mode === 'webspeech' && payload.text && window.speechSynthesis) {
+      const u = new SpeechSynthesisUtterance(payload.text.slice(0, 1400));
+      u.lang = payload.lang === 'en' ? 'en-US' : 'ru-RU';
+      u.rate = Number(payload.rate) || 1.0;
+      u.pitch = payload.voice === 'f' ? 1.15 : payload.voice === 'n' ? 1.0 : 0.88;
+      let finished = false;
+      const done = () => {
+        if (finished) return;
+        finished = true;
+        window.NexVoice.setSpeaking(false);
+        window.nexApi.speechFinished();
+      };
+      u.onend = done;
+      u.onerror = done;
+      window.speechSynthesis.speak(u);
+      return;
+    }
+
+    window.NexVoice.setSpeaking(false);
+    window.nexApi.speechFinished();
   });
 
   window.nexApi.onSpeakText(({ text, lang, voice, rate }) => {

@@ -2,20 +2,25 @@
 
 (function () {
   const cv = document.getElementById('cv');
+  const bubbleBox = document.getElementById('bubbleBox');
   const bubble = document.getElementById('bubble');
+  const transcript = document.getElementById('transcript');
   const sphere = window.NexSphereRenderer.attach(cv);
 
   function apply(data) {
     if (!data) return;
     sphere.update(data.state, data.female);
-    bubble.textContent = data.label || '';
-    bubble.classList.toggle('empty', !data.label);
+    const lbl = data.label || '';
+    const words = data.transcript || '';
+    bubble.textContent = lbl;
+    transcript.textContent = words ? `«${words}»` : '';
+    transcript.classList.toggle('empty', !words);
+    bubbleBox.classList.toggle('empty', !lbl && !words);
   }
 
   window.nexApi.getBootstrap().then(b => apply(b.sphere));
   window.nexApi.onSphereState(apply);
 
-  // Dragging & click-to-open
   let dragging = false;
   let moved = false;
   let lastX = 0;

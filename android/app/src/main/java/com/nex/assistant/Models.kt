@@ -60,11 +60,19 @@ enum class NexProfile(
         descRu = "Быстрые ответы и простые задачи",
         descEn = "Fast answers and simple tasks",
         textRoutes = listOf(
-            ModelTarget("Gemini", "gemini-3.1-flash-lite"),
-            ModelTarget("OpenAI", "gpt-6-luna"),
-            ModelTarget("Claude", "claude-haiku-5-5"),
-            ModelTarget("DeepSeek", "deepseek-flash"),
-            ModelTarget("NVIDIA", "google/gemma-4-31b-it")
+            ModelTarget("Groq", "qwen/qwen3-32b"),
+            ModelTarget("Cerebras", "qwen-3-32b"),
+            ModelTarget("Gemini", "gemini-2.5-flash-lite"),
+            ModelTarget("OpenRouter", "qwen/qwen3-coder:free"),
+            ModelTarget("Mistral", "devstral-small-latest"),
+            ModelTarget("DeepSeek", "deepseek-chat"),
+            ModelTarget("Qwen", "qwen-turbo"),
+            ModelTarget("OpenAI", "gpt-4.1-mini"),
+            ModelTarget("Claude", "claude-3-5-haiku-latest"),
+            ModelTarget("GitHub", "gpt-4o"),
+            ModelTarget("xAI", "grok-3-mini"),
+            ModelTarget("NVIDIA", "google/gemma-3-27b-it"),
+            ModelTarget("Custom", "qwen2.5-coder:14b")
         )
     ),
     QUARK(
@@ -73,11 +81,19 @@ enum class NexProfile(
         descRu = "Золотая середина: ум и скорость",
         descEn = "The sweet spot: smart and fast",
         textRoutes = listOf(
-            ModelTarget("Claude", "claude-sonnet-5-5"),
-            ModelTarget("Gemini", "gemini-3.8-flash"),
-            ModelTarget("OpenAI", "gpt-6.1-terra"),
-            ModelTarget("DeepSeek", "deepseek-v4-pro"),
-            ModelTarget("NVIDIA", "deepseek-ai/deepseek-v4.1-flash")
+            ModelTarget("Claude", "claude-sonnet-4-5"),
+            ModelTarget("OpenRouter", "anthropic/claude-sonnet-4"),
+            ModelTarget("Gemini", "gemini-2.5-flash"),
+            ModelTarget("Mistral", "devstral-medium-latest"),
+            ModelTarget("DeepSeek", "deepseek-chat"),
+            ModelTarget("Qwen", "qwen3-coder-plus"),
+            ModelTarget("OpenAI", "gpt-4.1"),
+            ModelTarget("Cerebras", "qwen-3-coder-480b"),
+            ModelTarget("Groq", "qwen/qwen3-32b"),
+            ModelTarget("GitHub", "Codestral-2501"),
+            ModelTarget("xAI", "grok-code-fast-1"),
+            ModelTarget("NVIDIA", "qwen/qwen2.5-coder-32b-instruct"),
+            ModelTarget("Custom", "qwen2.5-coder:14b")
         )
     ),
     SEL(
@@ -86,11 +102,19 @@ enum class NexProfile(
         descRu = "Самый сильный для сложных задач",
         descEn = "The strongest for complex tasks",
         textRoutes = listOf(
-            ModelTarget("Claude", "claude-opus-5-5"),
-            ModelTarget("OpenAI", "gpt-6.2-astra"),
-            ModelTarget("Gemini", "gemini-4-argon"),
-            ModelTarget("DeepSeek", "deepseek-v4-pro"),
-            ModelTarget("NVIDIA", "moonshotai/kimi-k2.6")
+            ModelTarget("Claude", "claude-opus-4-1"),
+            ModelTarget("OpenAI", "gpt-4.1"),
+            ModelTarget("OpenRouter", "anthropic/claude-sonnet-4"),
+            ModelTarget("Gemini", "gemini-2.5-pro"),
+            ModelTarget("DeepSeek", "deepseek-reasoner"),
+            ModelTarget("Qwen", "qwen3-coder-plus"),
+            ModelTarget("Mistral", "codestral-latest"),
+            ModelTarget("xAI", "grok-3"),
+            ModelTarget("Cerebras", "qwen-3-coder-480b"),
+            ModelTarget("GitHub", "DeepSeek-R1"),
+            ModelTarget("Groq", "moonshotai/kimi-k2-instruct"),
+            ModelTarget("NVIDIA", "deepseek-ai/deepseek-r1"),
+            ModelTarget("Custom", "deepseek-r1:14b")
         )
     ),
     FOTON(
@@ -110,8 +134,14 @@ enum class NexProfile(
 
     fun desc(lang: String): String = if (lang == "en") descEn else descRu
 
-    fun resolveText(keys: Map<String, String>): ModelTarget? =
-        textRoutes.firstOrNull { !keys[it.provider].isNullOrBlank() }
+    fun resolveText(
+        keys: Map<String, String>,
+        customBaseUrl: String = "",
+        catalog: Map<String, List<String>> = emptyMap()
+    ): ModelTarget? {
+        val hit = textRoutes.firstOrNull { LlmClient.isProviderReady(it.provider, keys, customBaseUrl) } ?: return null
+        return ModelTarget(hit.provider, LlmClient.pickBestModelForProvider(hit.provider, hit.model, catalog))
+    }
 
     fun resolveMedia(mode: GenMode, keys: Map<String, String>): ModelTarget? {
         val routes = if (mode == GenMode.VIDEO) videoRoutes else imageRoutes
@@ -230,3 +260,29 @@ enum class AppScreen {
 enum class SettingsTab(val id: String) {
     AI("ai"), VOICE("voice"), MEMORY("memory"), ACCESS("access"), SAFETY("safety"), LANGUAGE("lang")
 }
+
+
+data class StorageConfig(
+    val backend: String = "webdav",
+    val webdavUrl: String = "",
+    val webdavUser: String = "",
+    val webdavPassword: String = "",
+    val webdavRoot: String = "Nex",
+    val s3Endpoint: String = "",
+    val s3Region: String = "auto",
+    val s3Bucket: String = "",
+    val s3AccessKeyId: String = "",
+    val s3SecretAccessKey: String = "",
+    val s3Prefix: String = "Nex"
+)
+
+data class StorageStats(
+    val mediaCount: Int = 0,
+    val mediaBytes: Long = 0L,
+    val artifactCount: Int = 0,
+    val artifactBytes: Long = 0L,
+    val attachmentCount: Int = 0,
+    val attachmentBytes: Long = 0L,
+    val chatCount: Int = 0,
+    val keysCount: Int = 0
+)

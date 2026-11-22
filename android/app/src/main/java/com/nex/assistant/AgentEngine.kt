@@ -312,6 +312,11 @@ class AgentEngine(private val ctx: Context, private val store: Store) {
         webSearchEnabled: Boolean,
         projectFolderUri: String?,
         history: List<LlmTurnMessage>,
+        allApiKeys: Map<String, String> = mapOf(provider to apiKey),
+        modelCatalog: Map<String, List<String>> = emptyMap(),
+        customBaseUrl: String = "",
+        profileId: String? = null,
+        autoFailover: Boolean = true,
         onStatus: (NexState, String) -> Unit
     ): AgentRunResult {
         val agentName = Strings.agentName(lang, female)
@@ -339,27 +344,44 @@ class AgentEngine(private val ctx: Context, private val store: Store) {
         val workingHistory = history.toMutableList()
         val createdArtifacts = mutableListOf<ArtifactItem>()
         val savedMemories = mutableListOf<String>()
+        var activeProvider = provider
+        var activeModel = model
+        var failoverNotice = ""
 
         for (step in 0 until 8) {
             onStatus(NexState.THINKING, Strings.t("thinking", lang, female))
-            val response = LlmClient.complete(
-                provider = provider,
-                model = model,
-                apiKey = apiKey,
+            val response = LlmClient.completeWithFailover(
+                primaryProvider = activeProvider,
+                primaryModel = activeModel,
+                profileId = profileId,
+                allKeys = allApiKeys,
+                catalog = modelCatalog,
+                customBaseUrl = customBaseUrl,
+                autoFailover = autoFailover,
                 systemPrompt = sys,
                 messages = workingHistory,
                 tools = tools,
                 effort = effort,
-                webSearchEnabled = webSearchEnabled
+                webSearchEnabled = webSearchEnabled,
+                onSwitch = { fromP, toP, toM ->
+                    activeProvider = toP
+                    activeModel = toM
+                    failoverNotice = if (lang == "en") "⚡ $fromP limit reached → switched to $toP ($toM)" else "⚡ Лимит $fromP исчерпан → переключено на $toP ($toM)"
+                    onStatus(NexState.THINKING, failoverNotice)
+                }
             )
+            if (response.usedProvider.isNotBlank()) activeProvider = response.usedProvider
+            if (response.usedModel.isNotBlank()) activeModel = response.usedModel
 
             if (response.toolCalls.isEmpty()) {
+                val baseTxt = response.text.ifBlank {
+                    if (createdArtifacts.isNotEmpty()) {
+                        if (lang == "en") "Artifact created." else "Артефакт готов."
+                    } else ""
+                }
+                val finalTxt = if (failoverNotice.isNotBlank()) "$failoverNotice\n\n$baseTxt".trim() else baseTxt
                 return AgentRunResult(
-                    finalText = response.text.ifBlank {
-                        if (createdArtifacts.isNotEmpty()) {
-                            if (lang == "en") "Artifact created." else "Артефакт готов."
-                        } else ""
-                    },
+                    finalText = finalTxt,
                     createdArtifacts = createdArtifacts,
                     savedMemories = savedMemories
                 )
@@ -369,7 +391,8 @@ class AgentEngine(private val ctx: Context, private val store: Store) {
                 LlmTurnMessage(
                     role = "assistant",
                     text = response.text,
-                    toolCalls = response.toolCalls
+                    toolCalls = response.toolCalls,
+                    rawGeminiParts = response.rawGeminiParts
                 )
             )
 

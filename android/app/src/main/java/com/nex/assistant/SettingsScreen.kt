@@ -112,19 +112,23 @@ fun SettingsScreen(
 @Composable
 private fun AiSettingsTab(ctrl: NexController) {
     var refreshStatus by remember { mutableStateOf("") }
+    val isEn = ctrl.lang == "en"
 
     Text(ctrl.t("keys_stored_local"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    LlmClient.PROVIDERS.forEach { provider ->
-        OutlinedTextField(
-            value = ctrl.apiKeys[provider].orEmpty(),
-            onValueChange = { ctrl.updateApiKey(provider, it) },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("$provider API Key") },
-            visualTransformation = PasswordVisualTransformation(),
-            singleLine = true
-        )
-    }
-    Text(ctrl.t("keys_hint"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+    SettingSwitchRow(
+        title = if (isEn) "Auto-switch AI on limit / quota" else "Автопереключение при исчерпании лимита",
+        desc = if (isEn) "Automatically switches to another connected key on 429 / 402 / 503." else "При лимите (429 / 402 / 503) сам переключится на другую подключённую нейросеть.",
+        checked = ctrl.autoFailover,
+        onCheckedChange = { ctrl.updateAutoFailover(it) }
+    )
+    SettingSwitchRow(
+        title = if (isEn) "Auto-refresh models from APIs" else "Автообновление списка моделей",
+        desc = if (isEn) "Refreshes available models when adding keys and every 6 hours." else "Автоматически подтягивает свежие модели при вводе ключа и каждые 6 часов.",
+        checked = ctrl.autoRefreshModels,
+        onCheckedChange = { ctrl.updateAutoRefreshModels(it) }
+    )
+
     OutlinedButton(
         onClick = {
             refreshStatus = "…"
@@ -139,6 +143,29 @@ private fun AiSettingsTab(ctrl: NexController) {
     if (refreshStatus.isNotEmpty()) {
         Text(refreshStatus, style = MaterialTheme.typography.bodySmall, color = NexOkColor)
     }
+
+    LlmClient.PROVIDERS.forEach { provider ->
+        val note = LlmClient.PROVIDER_NOTES[provider].orEmpty()
+        if (provider == "Custom") {
+            OutlinedTextField(
+                value = ctrl.customBaseUrl,
+                onValueChange = { ctrl.updateCustomBaseUrl(it) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Custom OpenAI Base URL (Ollama / LM Studio)") },
+                singleLine = true
+            )
+        }
+        OutlinedTextField(
+            value = ctrl.apiKeys[provider].orEmpty(),
+            onValueChange = { ctrl.updateApiKey(provider, it) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("$provider API Key") },
+            supportingText = if (note.isNotBlank()) ({ Text(note) }) else null,
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true
+        )
+    }
+    Text(ctrl.t("keys_hint"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable

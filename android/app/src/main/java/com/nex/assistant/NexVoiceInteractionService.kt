@@ -67,16 +67,21 @@ class NexVoiceSession(private val ctx: Context) : VoiceInteractionSession(ctx) {
  * Overlay voice assistant sheet triggered by system Assist / Voice Command / Default Assistant.
  */
 class AssistActivity : ComponentActivity() {
+    companion object {
+        const val EXTRA_ALREADY_LISTENING = "already_listening"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val ctrl = (application as NexApp).controller
+        val alreadyListening = intent?.getBooleanExtra(EXTRA_ALREADY_LISTENING, false) == true
         setContent {
             NexTheme {
                 var input by remember { mutableStateOf("") }
                 val pending = SafetyGuard.activeConfirmation
 
                 LaunchedEffect(Unit) {
-                    if (!ctrl.isBusy && !ctrl.isListening) {
+                    if (!alreadyListening && !ctrl.isBusy && !ctrl.isListening) {
                         ctrl.startVoiceInput(fromAssistOverlay = true)
                     }
                 }
@@ -125,7 +130,7 @@ class AssistActivity : ComponentActivity() {
                                 )
                                 IconButton(onClick = {
                                     ctrl.stopVoiceInput()
-                                    ctrl.voiceManager.stopSpeaking()
+                                    ctrl.stopSpeaking()
                                     SafetyGuard.cancelActive()
                                     finish()
                                 }) {

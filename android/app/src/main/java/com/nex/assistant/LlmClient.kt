@@ -16,7 +16,8 @@ data class ToolSpec(
 data class LlmToolCall(
     val id: String,
     val name: String,
-    val arguments: JSONObject
+    val arguments: JSONObject,
+    val thoughtSignature: String? = null
 )
 
 data class LlmTurnMessage(
@@ -25,50 +26,55 @@ data class LlmTurnMessage(
     val imageAttachments: List<Pair<String, String>> = emptyList(),
     val toolCalls: List<LlmToolCall> = emptyList(),
     val toolCallId: String? = null,
-    val toolName: String? = null
+    val toolName: String? = null,
+    val rawGeminiParts: JSONArray? = null
 )
 
 data class LlmResponse(
     val text: String,
-    val toolCalls: List<LlmToolCall> = emptyList()
+    val toolCalls: List<LlmToolCall> = emptyList(),
+    val rawGeminiParts: JSONArray? = null,
+    val usedProvider: String = "",
+    val usedModel: String = "",
+    val switchedFrom: String? = null
 )
 
 object LlmClient {
-    val PROVIDERS: List<String> = listOf("Gemini", "OpenAI", "Claude", "DeepSeek", "NVIDIA")
+    val PROVIDERS: List<String> = listOf(
+        "Gemini", "OpenAI", "Claude", "OpenRouter", "Mistral", "DeepSeek",
+        "Qwen", "Groq", "Cerebras", "GitHub", "xAI", "NVIDIA", "Custom"
+    )
+
+    val PROVIDER_NOTES: Map<String, String> = mapOf(
+        "Gemini" to "Google AI Studio · большой контекст",
+        "OpenAI" to "GPT-4.1 / o3-mini",
+        "Claude" to "Топ для сложного кода и архитектуры",
+        "OpenRouter" to "1 ключ = сотни моделей + бесплатные :free",
+        "Mistral" to "Devstral & Codestral специально под код",
+        "DeepSeek" to "Сильный и дешёвый кодинг + reasoning",
+        "Qwen" to "Alibaba DashScope · Qwen3 Coder",
+        "Groq" to "Сверхвысокая скорость + бесплатный лимит",
+        "Cerebras" to "Рекордная скорость генерации кода",
+        "GitHub" to "Бесплатно по GitHub Token (PAT)",
+        "xAI" to "Grok Code & Grok 3",
+        "NVIDIA" to "DeepSeek, Qwen Coder, Kimi, Gemma",
+        "Custom" to "Свой OpenAI Base URL / локальная Ollama"
+    )
 
     val DEFAULT_MODELS: Map<String, List<String>> = linkedMapOf(
-        "Gemini" to listOf(
-            "gemini-4-argon",
-            "gemini-3.8-flash",
-            "gemini-3.1-pro-preview",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite"
-        ),
-        "OpenAI" to listOf(
-            "gpt-6.2-astra",
-            "gpt-6.2-sol",
-            "gpt-6.1-terra",
-            "gpt-6-luna"
-        ),
-        "Claude" to listOf(
-            "claude-fable-5-2",
-            "claude-opus-5-5",
-            "claude-sonnet-5-5",
-            "claude-haiku-5-5"
-        ),
-        "DeepSeek" to listOf(
-            "deepseek-v4-pro",
-            "deepseek-flash"
-        ),
-        "NVIDIA" to listOf(
-            "deepseek-ai/deepseek-v4.1-flash",
-            "deepseek-ai/deepseek-v4-pro",
-            "deepseek-ai/deepseek-v4-flash",
-            "moonshotai/kimi-k2.6",
-            "minimaxai/minimax-m2.7",
-            "google/gemma-4-31b-it"
-        )
+        "Gemini" to listOf("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite", "gemini-2.0-flash"),
+        "OpenAI" to listOf("gpt-4.1", "gpt-4.1-mini", "o3-mini", "gpt-4o"),
+        "Claude" to listOf("claude-sonnet-4-5", "claude-opus-4-1", "claude-3-7-sonnet-latest", "claude-3-5-haiku-latest"),
+        "OpenRouter" to listOf("anthropic/claude-sonnet-4", "deepseek/deepseek-chat-v3-0324:free", "qwen/qwen3-coder:free", "mistralai/devstral-small:free"),
+        "Mistral" to listOf("devstral-medium-latest", "devstral-small-latest", "codestral-latest", "mistral-large-latest"),
+        "DeepSeek" to listOf("deepseek-chat", "deepseek-reasoner"),
+        "Qwen" to listOf("qwen3-coder-plus", "qwen-plus", "qwen-turbo"),
+        "Groq" to listOf("qwen/qwen3-32b", "llama-3.3-70b-versatile", "moonshotai/kimi-k2-instruct"),
+        "Cerebras" to listOf("qwen-3-coder-480b", "qwen-3-32b", "llama-3.3-70b"),
+        "GitHub" to listOf("gpt-4o", "DeepSeek-R1", "Codestral-2501", "Meta-Llama-3.3-70B-Instruct"),
+        "xAI" to listOf("grok-code-fast-1", "grok-3", "grok-3-mini"),
+        "NVIDIA" to listOf("deepseek-ai/deepseek-r1", "qwen/qwen2.5-coder-32b-instruct", "moonshotai/kimi-k2-instruct", "google/gemma-3-27b-it"),
+        "Custom" to listOf("qwen2.5-coder:14b", "deepseek-r1:14b", "devstral:latest")
     )
 
     val IMAGE_MODELS: Map<String, List<String>> = linkedMapOf(
@@ -92,26 +98,130 @@ object LlmClient {
 
     private val OPENAI_ENDPOINTS = mapOf(
         "OpenAI" to "https://api.openai.com/v1/chat/completions",
+        "OpenRouter" to "https://openrouter.ai/api/v1/chat/completions",
+        "Mistral" to "https://api.mistral.ai/v1/chat/completions",
         "DeepSeek" to "https://api.deepseek.com/chat/completions",
+        "Qwen" to "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "Groq" to "https://api.groq.com/openai/v1/chat/completions",
+        "Cerebras" to "https://api.cerebras.ai/v1/chat/completions",
+        "GitHub" to "https://models.inference.ai.azure.com/chat/completions",
+        "xAI" to "https://api.x.ai/v1/chat/completions",
         "NVIDIA" to "https://integrate.api.nvidia.com/v1/chat/completions"
     )
 
+    private val MODELS_ENDPOINTS = mapOf(
+        "OpenAI" to "https://api.openai.com/v1/models",
+        "OpenRouter" to "https://openrouter.ai/api/v1/models",
+        "Mistral" to "https://api.mistral.ai/v1/models",
+        "DeepSeek" to "https://api.deepseek.com/models",
+        "Qwen" to "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+        "Groq" to "https://api.groq.com/openai/v1/models",
+        "Cerebras" to "https://api.cerebras.ai/v1/models",
+        "GitHub" to "https://models.inference.ai.azure.com/models",
+        "xAI" to "https://api.x.ai/v1/models",
+        "NVIDIA" to "https://integrate.api.nvidia.com/v1/models"
+    )
+
+    private val providerCooldowns = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    fun clearCooldown(provider: String) { providerCooldowns.remove(provider) }
+    fun isProviderReady(provider: String, keys: Map<String, String>, customBaseUrl: String = ""): Boolean =
+        if (provider == "Custom") customBaseUrl.trim().isNotEmpty() else !keys[provider].isNullOrBlank()
+
+    fun pickBestModelForProvider(provider: String, preferred: String?, catalog: Map<String, List<String>>): String {
+        val cat = catalog[provider].orEmpty()
+        if (!preferred.isNullOrBlank()) {
+            if (cat.isEmpty() || cat.contains(preferred)) return preferred
+            val base = preferred.substringBefore(":").split("-").take(2).joinToString("-").lowercase()
+            val similar = cat.firstOrNull { it.lowercase().contains(base) }
+            if (similar != null) return similar
+        }
+        return cat.firstOrNull() ?: DEFAULT_MODELS[provider]?.firstOrNull() ?: preferred.orEmpty()
+    }
+
+    private fun isQuotaOrFailoverError(msg: String): Pair<Boolean, Boolean> {
+        val code = Regex("HTTP\s+(\d{3})", RegexOption.IGNORE_CASE).find(msg)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+        val hardRx = Regex("(insufficient[_\s-]?(balance|quota|funds|credit)|credit[s]?\s*(exhausted|depleted)|billing|payment\s*required|daily\s+limit|monthly\s+limit)", RegexOption.IGNORE_CASE)
+        val softRx = Regex("(rate[_\s-]?limit|too\s+many\s+requests|resource[_\s-]?exhausted|quota|overloaded|high\s+demand|temporarily\s+unavailable|limit\s+exceeded)", RegexOption.IGNORE_CASE)
+        if (code == 402 || hardRx.containsMatchIn(msg)) return true to true
+        if (code == 429 || code == 503 || code == 529 || softRx.containsMatchIn(msg)) return true to false
+        if (code == 403 && Regex("(quota|limit|credit|billing|exhausted|balance)", RegexOption.IGNORE_CASE).containsMatchIn(msg)) return true to true
+        if (code == 404 && Regex("(model|not\s+found)", RegexOption.IGNORE_CASE).containsMatchIn(msg)) return true to false
+        return false to false
+    }
+
     suspend fun complete(
-        provider: String,
-        model: String,
-        apiKey: String,
-        systemPrompt: String,
-        messages: List<LlmTurnMessage>,
-        tools: List<ToolSpec>,
-        effort: Effort,
-        webSearchEnabled: Boolean
+        provider: String, model: String, apiKey: String, systemPrompt: String,
+        messages: List<LlmTurnMessage>, tools: List<ToolSpec>, effort: Effort,
+        webSearchEnabled: Boolean, customBaseUrl: String = ""
     ): LlmResponse = withContext(Dispatchers.IO) {
         when (provider) {
             "Gemini" -> callGemini(model, apiKey, systemPrompt, messages, tools, effort, webSearchEnabled, includeEffort = true)
             "Claude" -> callClaude(model, apiKey, systemPrompt, messages, tools, effort, includeEffort = true)
-            else -> callOpenAiCompatible(provider, model, apiKey, systemPrompt, messages, tools, effort, includeEffort = true)
+            else -> callOpenAiCompatible(provider, model, apiKey, customBaseUrl, systemPrompt, messages, tools, effort, includeEffort = true)
         }
     }
+
+    suspend fun completeWithFailover(
+        primaryProvider: String, primaryModel: String, profileId: String?, allKeys: Map<String, String>,
+        catalog: Map<String, List<String>>, customBaseUrl: String, autoFailover: Boolean,
+        systemPrompt: String, messages: List<LlmTurnMessage>, tools: List<ToolSpec>, effort: Effort,
+        webSearchEnabled: Boolean, onSwitch: (String, String, String) -> Unit = { _, _, _ -> }
+    ): LlmResponse = withContext(Dispatchers.IO) {
+        val candidates = mutableListOf<ModelTarget>()
+        val seen = mutableSetOf<String>()
+        fun push(p: String, m: String?) {
+            if (p.isBlank() || seen.contains(p) || !isProviderReady(p, allKeys, customBaseUrl)) return
+            val chosen = pickBestModelForProvider(p, m, catalog)
+            if (chosen.isBlank()) return
+            seen.add(p)
+            candidates.add(ModelTarget(p, chosen))
+        }
+        push(primaryProvider, primaryModel)
+        if (autoFailover) {
+            (NexProfile.fromId(profileId) ?: NexProfile.QUARK).textRoutes.forEach { push(it.provider, it.model) }
+            PROVIDERS.forEach { push(it, null) }
+        }
+        if (candidates.isEmpty()) error("No API key configured.")
+
+        val now = System.currentTimeMillis()
+        val ordered = candidates.filter { (providerCooldowns[it.provider] ?: 0L) <= now } +
+            candidates.filter { (providerCooldowns[it.provider] ?: 0L) > now }.sortedBy { providerCooldowns[it.provider] ?: Long.MAX_VALUE }
+
+        var lastErr: Exception? = null
+        var switchedFrom: String? = null
+        for (i in ordered.indices) {
+            val cand = ordered[i]
+            if (i > 0 || cand.provider != primaryProvider) {
+                val fromP = switchedFrom ?: primaryProvider
+                switchedFrom = fromP
+                onSwitch(fromP, cand.provider, cand.model)
+            }
+            val safeMsgs = if (cand.provider == "Gemini") messages else messages.map { it.copy(rawGeminiParts = null) }
+            val key = allKeys[cand.provider].orEmpty().ifBlank { if (cand.provider == "Custom") "local" else "" }
+            try {
+                val resp = when (cand.provider) {
+                    "Gemini" -> callGemini(cand.model, key, systemPrompt, safeMsgs, tools, effort, webSearchEnabled, includeEffort = true)
+                    "Claude" -> callClaude(cand.model, key, systemPrompt, safeMsgs, tools, effort, includeEffort = true)
+                    else -> callOpenAiCompatible(cand.provider, cand.model, key, customBaseUrl, systemPrompt, safeMsgs, tools, effort, includeEffort = true)
+                }
+                providerCooldowns.remove(cand.provider)
+                return@withContext resp.copy(usedProvider = cand.provider, usedModel = cand.model, switchedFrom = if (cand.provider != primaryProvider) primaryProvider else switchedFrom)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                lastErr = e
+                val (shouldFailover, isHard) = isQuotaOrFailoverError(e.message.orEmpty())
+                if (autoFailover && shouldFailover && i < ordered.lastIndex) {
+                    providerCooldowns[cand.provider] = System.currentTimeMillis() + (if (isHard) 30L else 5L) * 60_000L
+                    switchedFrom = switchedFrom ?: cand.provider
+                    continue
+                }
+                throw e
+            }
+        }
+        throw (lastErr ?: IllegalStateException("All connected AI providers failed."))
+    }
+
+    private val GEMINI_FALLBACK_MODELS = listOf("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash")
 
     private fun callGemini(
         model: String,
@@ -121,7 +231,9 @@ object LlmClient {
         tools: List<ToolSpec>,
         effort: Effort,
         webSearchEnabled: Boolean,
-        includeEffort: Boolean
+        includeEffort: Boolean,
+        retryIndex: Int = 0,
+        usedFallback: Boolean = false
     ): LlmResponse {
         val contents = JSONArray()
         messages.forEach { msg ->
@@ -142,30 +254,51 @@ object LlmClient {
                     }
                 }
                 "assistant" -> {
-                    val parts = JSONArray()
-                    if (msg.text.isNotEmpty()) parts.put(JSONObject().put("text", msg.text))
-                    msg.toolCalls.forEach { tc ->
-                        parts.put(
-                            JSONObject().put(
+                    if (msg.rawGeminiParts != null && msg.rawGeminiParts.length() > 0) {
+                        // Preserve exact raw parts from Gemini (including thoughtSignature / thought parts)
+                        contents.put(JSONObject().put("role", "model").put("parts", msg.rawGeminiParts))
+                    } else {
+                        val parts = JSONArray()
+                        if (msg.text.isNotEmpty()) parts.put(JSONObject().put("text", msg.text))
+                        msg.toolCalls.forEach { tc ->
+                            val part = JSONObject().put(
                                 "functionCall",
                                 JSONObject().put("name", tc.name).put("args", tc.arguments)
                             )
-                        )
-                    }
-                    if (parts.length() > 0) {
-                        contents.put(JSONObject().put("role", "model").put("parts", parts))
+                            if (!tc.thoughtSignature.isNullOrEmpty()) {
+                                part.put("thoughtSignature", tc.thoughtSignature)
+                            }
+                            parts.put(part)
+                        }
+                        if (parts.length() > 0) {
+                            contents.put(JSONObject().put("role", "model").put("parts", parts))
+                        }
                     }
                 }
                 "tool" -> {
-                    val parts = JSONArray().put(
-                        JSONObject().put(
-                            "functionResponse",
-                            JSONObject()
-                                .put("name", msg.toolName ?: "tool")
-                                .put("response", JSONObject().put("result", msg.text))
-                        )
+                    val fnRespPart = JSONObject().put(
+                        "functionResponse",
+                        JSONObject()
+                            .put("name", msg.toolName ?: "tool")
+                            .put("response", JSONObject().put("result", msg.text))
                     )
-                    contents.put(JSONObject().put("role", "user").put("parts", parts))
+                    // Group consecutive tool responses into one user block for parallel tool calls
+                    val lastObj = if (contents.length() > 0) contents.optJSONObject(contents.length() - 1) else null
+                    val lastParts = lastObj?.optJSONArray("parts")
+                    var allFnResp = lastObj?.optString("role") == "user" && lastParts != null && lastParts.length() > 0
+                    if (allFnResp && lastParts != null) {
+                        for (k in 0 until lastParts.length()) {
+                            if (!lastParts.getJSONObject(k).has("functionResponse")) {
+                                allFnResp = false
+                                break
+                            }
+                        }
+                    }
+                    if (allFnResp && lastParts != null) {
+                        lastParts.put(fnRespPart)
+                    } else {
+                        contents.put(JSONObject().put("role", "user").put("parts", JSONArray().put(fnRespPart)))
+                    }
                 }
             }
         }
@@ -213,8 +346,23 @@ object LlmClient {
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
         val res = postRaw(url, mapOf("x-goog-api-key" to apiKey), body.toString())
         if (!res.ok) {
-            if (includeEffort && res.code == 400 && res.body.contains("thinking", ignoreCase = true)) {
-                return callGemini(model, apiKey, systemPrompt, messages, tools, effort, webSearchEnabled, includeEffort = false)
+            if (includeEffort && res.code == 400 &&
+                res.body.contains("thinking", ignoreCase = true) &&
+                !res.body.contains("thought_signature", ignoreCase = true)
+            ) {
+                return callGemini(model, apiKey, systemPrompt, messages, tools, effort, webSearchEnabled, includeEffort = false, retryIndex = retryIndex, usedFallback = usedFallback)
+            }
+            if (res.code == 503 || res.code == 429) {
+                if (retryIndex < 2) {
+                    Thread.sleep(1200L * (retryIndex + 1))
+                    return callGemini(model, apiKey, systemPrompt, messages, tools, effort, webSearchEnabled, includeEffort, retryIndex = retryIndex + 1, usedFallback = usedFallback)
+                }
+                if (!usedFallback) {
+                    val fb = GEMINI_FALLBACK_MODELS.firstOrNull { it != model }
+                    if (fb != null) {
+                        return callGemini(fb, apiKey, systemPrompt, messages, tools, effort, webSearchEnabled, includeEffort, retryIndex = 0, usedFallback = true)
+                    }
+                }
             }
             error("Gemini HTTP ${res.code}: ${res.body.take(300)}")
         }
@@ -234,16 +382,20 @@ object LlmClient {
             }
             val fc = part.optJSONObject("functionCall")
             if (fc != null) {
+                val sig = part.optString("thoughtSignature", "")
+                    .ifEmpty { part.optString("thought_signature", "") }
+                    .ifEmpty { null }
                 calls.add(
                     LlmToolCall(
                         id = "gem_${System.nanoTime()}_$i",
                         name = fc.getString("name"),
-                        arguments = fc.optJSONObject("args") ?: JSONObject()
+                        arguments = fc.optJSONObject("args") ?: JSONObject(),
+                        thoughtSignature = sig
                     )
                 )
             }
         }
-        return LlmResponse(sb.toString().trim(), calls)
+        return LlmResponse(sb.toString().trim(), calls, rawGeminiParts = parts)
     }
 
     private fun callClaude(
@@ -373,16 +525,14 @@ object LlmClient {
     }
 
     private fun callOpenAiCompatible(
-        provider: String,
-        model: String,
-        apiKey: String,
-        systemPrompt: String,
-        messages: List<LlmTurnMessage>,
-        tools: List<ToolSpec>,
-        effort: Effort,
-        includeEffort: Boolean
+        provider: String, model: String, apiKey: String, customBaseUrl: String, systemPrompt: String,
+        messages: List<LlmTurnMessage>, tools: List<ToolSpec>, effort: Effort, includeEffort: Boolean
     ): LlmResponse {
-        val url = OPENAI_ENDPOINTS[provider] ?: error("Unknown provider: $provider")
+        val url = if (provider == "Custom") {
+            val clean = customBaseUrl.trim().trimEnd('/')
+            if (clean.isEmpty()) error("Custom Base URL is not configured in Settings -> AI")
+            if (clean.endsWith("/chat/completions")) clean else "$clean/chat/completions"
+        } else OPENAI_ENDPOINTS[provider] ?: error("Unknown provider: $provider")
         val arr = JSONArray()
         if (systemPrompt.isNotBlank()) {
             arr.put(JSONObject().put("role", "system").put("content", systemPrompt))
@@ -472,10 +622,12 @@ object LlmClient {
             body.put("tools", tArr)
         }
 
-        val res = postRaw(url, mapOf("Authorization" to "Bearer $apiKey"), body.toString())
+        val hdrs = mutableMapOf("Authorization" to "Bearer ${apiKey.ifBlank { "local" }}")
+        if (provider == "OpenRouter") { hdrs["HTTP-Referer"] = "https://nex.assistant.local"; hdrs["X-Title"] = "Nex Assistant" }
+        val res = postRaw(url, hdrs, body.toString())
         if (!res.ok) {
             if (includeEffort && res.code == 400 && res.body.contains("reasoning_effort", ignoreCase = true)) {
-                return callOpenAiCompatible(provider, model, apiKey, systemPrompt, messages, tools, effort, includeEffort = false)
+                return callOpenAiCompatible(provider, model, apiKey, customBaseUrl, systemPrompt, messages, tools, effort, includeEffort = false)
             }
             error("$provider HTTP ${res.code}: ${res.body.take(300)}")
         }
@@ -504,62 +656,45 @@ object LlmClient {
         return LlmResponse(text.trim(), calls)
     }
 
-    suspend fun fetchModels(provider: String, apiKey: String): List<String> = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) return@withContext emptyList()
+    suspend fun fetchModels(provider: String, apiKey: String, customBaseUrl: String = ""): List<String> = withContext(Dispatchers.IO) {
+        if (!isProviderReady(provider, mapOf(provider to apiKey), customBaseUrl)) return@withContext emptyList()
+        val skipRx = Regex("(embed|embedding|whisper|tts|audio|speech|moderation|dall-e|imagen|veo|realtime|transcribe|rerank)", RegexOption.IGNORE_CASE)
+        fun cleanList(raw: List<String>): List<String> {
+            val base = raw.distinct().filter { it.isNotBlank() && !skipRx.containsMatchIn(it) }
+            return when (provider) {
+                "Gemini" -> base.filter { it.startsWith("gemini") }.take(60)
+                "NVIDIA" -> base.filter { Regex("(deepseek|qwen|gemma|kimi|minimax|llama|mistral|codestral|devstral)", RegexOption.IGNORE_CASE).containsMatchIn(it) }.take(60)
+                "OpenRouter" -> {
+                    val prio = base.filter { Regex("(claude|gpt-4|gpt-5|o3|o4|gemini|deepseek|qwen|codestral|devstral|mistral|grok|kimi|llama-3\\.3|:free)", RegexOption.IGNORE_CASE).containsMatchIn(it) }
+                    (if (prio.isNotEmpty()) prio else base).take(80)
+                }
+                else -> base.take(80)
+            }
+        }
         when (provider) {
             "Gemini" -> {
-                val res = getRaw(
-                    "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100",
-                    mapOf("x-goog-api-key" to apiKey)
-                )
+                val res = getRaw("https://generativelanguage.googleapis.com/v1beta/models?pageSize=100", mapOf("x-goog-api-key" to apiKey))
                 if (!res.ok) return@withContext emptyList()
                 val arr = JSONObject(res.body).optJSONArray("models") ?: return@withContext emptyList()
-                buildList {
-                    for (i in 0 until arr.length()) {
-                        val m = arr.getJSONObject(i)
-                        val name = m.optString("name").removePrefix("models/")
-                        if (name.startsWith("gemini")) add(name)
-                    }
-                }
+                cleanList((0 until arr.length()).map { arr.getJSONObject(it).optString("name").removePrefix("models/") })
             }
             "Claude" -> {
-                val res = getRaw(
-                    "https://api.anthropic.com/v1/models",
-                    mapOf("x-api-key" to apiKey, "anthropic-version" to "2023-06-01")
-                )
+                val res = getRaw("https://api.anthropic.com/v1/models", mapOf("x-api-key" to apiKey, "anthropic-version" to "2023-06-01"))
                 if (!res.ok) return@withContext emptyList()
                 val arr = JSONObject(res.body).optJSONArray("data") ?: return@withContext emptyList()
-                buildList {
-                    for (i in 0 until arr.length()) {
-                        val id = arr.getJSONObject(i).optString("id")
-                        if (id.isNotBlank()) add(id)
-                    }
-                }
+                cleanList((0 until arr.length()).map { arr.getJSONObject(it).optString("id") })
             }
             else -> {
-                val base = when (provider) {
-                    "OpenAI" -> "https://api.openai.com/v1/models"
-                    "DeepSeek" -> "https://api.deepseek.com/models"
-                    "NVIDIA" -> "https://integrate.api.nvidia.com/v1/models"
-                    else -> return@withContext emptyList()
-                }
-                val res = getRaw(base, mapOf("Authorization" to "Bearer $apiKey"))
+                val url = if (provider == "Custom") {
+                    val c = customBaseUrl.trim().trimEnd('/').removeSuffix("/chat/completions")
+                    if (c.endsWith("/models")) c else "$c/models"
+                } else MODELS_ENDPOINTS[provider] ?: return@withContext emptyList()
+                val res = getRaw(url, mapOf("Authorization" to "Bearer ${apiKey.ifBlank { "local" }}"))
                 if (!res.ok) return@withContext emptyList()
-                val arr = JSONObject(res.body).optJSONArray("data") ?: return@withContext emptyList()
-                buildList {
-                    for (i in 0 until arr.length()) {
-                        val id = arr.getJSONObject(i).optString("id")
-                        if (provider == "NVIDIA") {
-                            val keep = id.contains("deepseek", true) ||
-                                id.contains("gemma", true) ||
-                                id.contains("kimi", true) ||
-                                id.contains("minimax", true)
-                            if (keep) add(id)
-                        } else if (id.isNotBlank()) {
-                            add(id)
-                        }
-                    }
-                }
+                val trimmed = res.body.trim()
+                val arr = if (trimmed.startsWith("[")) JSONArray(trimmed)
+                else JSONObject(trimmed).optJSONArray("data") ?: JSONObject(trimmed).optJSONArray("models") ?: return@withContext emptyList()
+                cleanList((0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let { o -> o.optString("id").ifBlank { o.optString("name") } } })
             }
         }
     }
